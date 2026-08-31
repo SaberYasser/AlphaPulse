@@ -160,6 +160,15 @@ class SignalStore:
             (date_et, symbol, json.dumps(payload)),
         )
 
+    def confirmed_before(self, date_et: str, cutoff_ts: float) -> list[tuple]:
+        """Delivered CONFIRMED signals alerted before the quiet cutoff (recap)."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT symbol, direction, ts, alert_price, resolution_ts FROM signals "
+                "WHERE date_et=? AND suppressed=0 AND resolution='CONFIRMED' AND ts < ?",
+                (date_et, cutoff_ts),
+            ).fetchall()
+
     def set_meta(self, key: str, value: str) -> None:
         self._write("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
 

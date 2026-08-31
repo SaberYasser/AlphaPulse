@@ -30,6 +30,8 @@ session:
   start_lead_min: 8
   after_close: exit             # exit | pause
   opening_range_min: 5
+  quiet_last_min: 60            # no NEW alert deliveries in the final hour
+  recap_min_before_close: 30    # daily efficacy recap message
 
 engine:
   # --- placeholders: production calibration is private -----------------------

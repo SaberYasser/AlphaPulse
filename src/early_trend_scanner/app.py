@@ -59,6 +59,10 @@ class ScannerApp:
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         self._stopping = asyncio.Event()
         self._skew = 0.0  # server-minus-local clock skew, refreshed per session
+        # Delivery policy timestamps; armed per session in _run_one_session.
+        self._cutoff_ts = float("inf")  # no NEW alerts at/after this time
+        self._recap_ts = float("inf")
+        self._recap_sent = True
 
         # per-session objects, rebuilt each session
         self.engines: dict[str, SymbolEngine] = {}
@@ -121,8 +125,11 @@ class ScannerApp:
 
     def _build_hooks(self) -> MachineHooks:
         def emit(sig: Signal, kind: str, extras: dict[str, Any]) -> None:
-            # Telegram first — nothing may run before the enqueue.
-            self.notifier.publish_signal(sig, kind, extras)
+            # Telegram first — nothing may run before the enqueue. Signals
+            # alerted in the quiet last hour are never published (no fresh
+            # positions there); they are still tracked, resolved and labeled.
+            if sig.alert_ts < self._cutoff_ts:
+                self.notifier.publish_signal(sig, kind, extras)
             if kind in ("CONFIRMED", "FAILED"):
                 self.metrics.on_resolution(sig)
                 self._bg(asyncio.to_thread(self.store.record_resolution, sig))
@@ -289,11 +296,15 @@ class ScannerApp:
             return False
 
         self.session = session
+        self._cutoff_ts = session.close_ts - self.cfg.session.quiet_last_min * 60
+        self._recap_ts = session.close_ts - self.cfg.session.recap_min_before_close * 60
+        self._recap_sent = False
         log.info(
-            "session %s: open in %.1f min, close in %.1f min",
+            "session %s: open in %.1f min, close in %.1f min (quiet from %.0f min before close)",
             session.date_str,
             (session.open_ts - now) / 60,
             (session.close_ts - now) / 60,
+            self.cfg.session.quiet_last_min,
         )
 
         # Operational window begins: prevent idle sleep until teardown.
@@ -497,6 +508,46 @@ class ScannerApp:
             if self.labeler is not None:
                 rings = {sym: e.agg.ring for sym, e in self.engines.items()}
                 self.labeler.on_tick(now, rings)
+            self._maybe_recap(now)
+
+    def _minute_close_at(self, symbol: str, ts: float) -> float | None:
+        """1-minute close at or just before ts, from the engine's minute deque."""
+        eng = self.engines.get(symbol)
+        if eng is None:
+            return None
+        for m in reversed(eng.agg.minutes):
+            if m.ts + 60 <= ts + 1:
+                return m.close
+        return None
+
+    def _maybe_recap(self, now: float) -> None:
+        if self._recap_sent or self.session is None or now < self._recap_ts:
+            return
+        self._recap_sent = True
+        try:
+            from .recap import RecapRow, build_recap, format_recap
+
+            date_str = self.session.date_str
+            rows = [
+                RecapRow(
+                    symbol=r[0],
+                    direction=int(r[1]),
+                    alert_ts=float(r[2]),
+                    alert_price=float(r[3]),
+                    resolution_ts=float(r[4]),
+                )
+                for r in self.store.confirmed_before(date_str, self._cutoff_ts)
+            ]
+            recap = build_recap(rows, self._minute_close_at, self._cutoff_ts)
+            msg = format_recap(date_str, recap)
+            self.notifier.publish_ops(msg, key=f"recap:{date_str}")
+            self.store.set_meta(
+                f"efficacy:{date_str}",
+                f"{recap.favorable}/{recap.confirmed} avg={recap.avg_move_bps:+.1f}bps",
+            )
+            log.info("RECAP sent: %s", msg)
+        except Exception:
+            log.exception("daily recap failed")
 
     async def _status_loop(self) -> None:
         while True:
