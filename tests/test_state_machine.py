@@ -82,8 +82,8 @@ def test_confirmed_followup(harness: Harness) -> None:
     ts = warmed(harness)
     end = pump_burst(harness, ts, 100.0, direction=1, seconds=6.0)
     assert "EARLY" in harness.messages()
-    # keep grinding higher past confirm_min_s
-    pump_burst(harness, end, 100.0 * (1 + 12e-4), direction=1, seconds=16.0, slope_bps_s=0.8)
+    # keep grinding higher past the 1-minute verdict clock
+    pump_burst(harness, end, 100.0 * (1 + 12e-4), direction=1, seconds=70.0, slope_bps_s=0.8)
     kinds = harness.messages()
     assert "CONFIRMED" in kinds
     assert harness.engine.machine.phase == Phase.COOLDOWN
@@ -115,7 +115,7 @@ def test_failed_followup_on_reversal(harness: Harness) -> None:
 def test_max_three_notifications_per_setup(harness: Harness) -> None:
     ts = warmed(harness)
     end = pump_burst(harness, ts, 100.0, direction=1, seconds=6.0)
-    pump_burst(harness, end, 100.0 * (1 + 12e-4), direction=1, seconds=16.0, slope_bps_s=0.8)
+    pump_burst(harness, end, 100.0 * (1 + 12e-4), direction=1, seconds=70.0, slope_bps_s=0.8)
     per_setup = [k for k in harness.messages()]
     assert 1 <= len(per_setup) <= 3
     assert per_setup.count("EARLY") == 1
@@ -180,7 +180,7 @@ def test_observation_deadline_confirms_when_held(harness: Harness) -> None:
     held = sig.trigger_price * (1 + 6e-4)
     # quiet hold above trigger; no new micro-high burst, resolution at deadline
     t = end
-    for i in range(50):
+    for i in range(95):
         t = end + i
         harness.engine.on_quote(q(t, held))
         harness.engine.on_trade(tr(t + 0.2, held))
@@ -198,10 +198,10 @@ def test_confirmation_requires_expansion_progress(harness: Harness) -> None:
     assert (sig.alert_price - sig.trigger_price) / inv_dist < 0.5  # not yet progressed
     barely = sig.trigger_price + 0.15 * inv_dist
     # past confirm_min_s, flow fine, but no 0.5R progress -> keeps observing
-    m.observe(sig.alert_ts + 13.0, barely, imb5=0.5, share_up5=0.8, vol5=1000.0)
+    m.observe(sig.alert_ts + 61.0, barely, imb5=0.5, share_up5=0.8, vol5=1000.0)
     assert sig.resolution == ""
     # deadline without progress -> FAILED, phrased as a stall
-    m.observe(sig.alert_ts + 46.0, barely, imb5=0.5, share_up5=0.8, vol5=1000.0)
+    m.observe(sig.alert_ts + 85.0, barely, imb5=0.5, share_up5=0.8, vol5=1000.0)
     assert sig.resolution == "FAILED"
     assert sig.resolution_reason == "no expansion progress"
 
@@ -212,7 +212,7 @@ def test_confirmation_fires_on_real_progress(harness: Harness) -> None:
     sig = m.consider(_passing_snap(), 0.55)
     inv_dist = abs(sig.trigger_price - sig.invalidation)
     progressed = sig.trigger_price + 0.6 * inv_dist
-    m.observe(sig.alert_ts + 13.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0)
+    m.observe(sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0)
     assert sig.resolution == "CONFIRMED"
 
 
@@ -366,9 +366,9 @@ def test_suppressed_setup_uses_short_cooldown(cfg) -> None:
     sig = m.consider(_passing_snap(), 0.55)
     assert sig.suppressed
     # resolve via deadline; suppressed setups get the short cooldown
-    m.observe(sig.alert_ts + 50.0, sig.trigger_price, 0.0, 0.5, 100.0)
+    m.observe(sig.alert_ts + 85.0, sig.trigger_price, 0.0, 0.5, 100.0)
     assert sig.resolution != ""
-    assert m.cooldown_until - sig.alert_ts - 50.0 == 60.0
+    assert m.cooldown_until - sig.alert_ts - 85.0 == 60.0
 
 
 def test_open_phase_allows_wider_extension(harness: Harness) -> None:
@@ -500,3 +500,47 @@ def test_trend_daily_cap(harness: Harness) -> None:
     end = pump_quiet(harness, end + 700, 60, price=102.2)
     escalator(harness, end, 102.2, direction=1)
     assert m.trend_alerts_today <= harness.cfg.engine.trend_max_per_day
+
+
+def test_opening_trend_continuation_uses_premarket_anchor(harness: Harness) -> None:
+    """A premarket trend continuing through the bell fires without 15 minutes
+    of session history, anchored to the premarket high."""
+    from early_trend_scanner.engine.state import Signal
+
+    harness.engine.seed_static_levels(pdh=101.5, pdl=98.0, pdc=99.0, pmh=100.05, pml=99.2)
+    ts = warmed(harness, minutes=4)  # only 4 session minutes
+    escalator(harness, ts, 100.0, direction=1)  # runs through the premarket high
+    trend_sigs = [s for s in harness.fired if s.trigger_verb == "trend"]
+    assert trend_sigs and isinstance(trend_sigs[0], Signal)
+
+
+def test_opening_trend_needs_premarket_data(cfg) -> None:
+    from dataclasses import replace
+
+    h = Harness(replace(cfg, engine=replace(cfg.engine, fresh_break_veto=False)))
+    # no premarket extremes seeded: young session must stay silent on trend
+    ts = warmed(h, minutes=4)
+    escalator(h, ts, 100.0, direction=1)
+    assert not [s for s in h.fired if s.trigger_verb == "trend"]
+
+
+def test_env_tiebreaker_confirms_marginal_progress(harness: Harness) -> None:
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    sig = m.consider(_passing_snap(), 0.55)
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    marginal = sig.trigger_price + 0.4 * inv_dist  # 0.8x the required progress
+    # deadline with supportive environment (market flowing with the signal)
+    m.observe(sig.alert_ts + 85.0, marginal, 0.5, 0.8, 1000.0, env=(0.05, 0.0, 1.0))
+    assert sig.resolution == "CONFIRMED"
+    assert sig.resolution_reason == "progress with tailwind"
+
+
+def test_env_neutral_marginal_progress_fails(harness: Harness) -> None:
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    sig = m.consider(_passing_snap(), 0.55)
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    marginal = sig.trigger_price + 0.4 * inv_dist
+    m.observe(sig.alert_ts + 85.0, marginal, 0.5, 0.8, 1000.0, env=(0.0, 0.0, 1.0))
+    assert sig.resolution == "FAILED"

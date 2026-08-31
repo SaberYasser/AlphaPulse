@@ -60,17 +60,19 @@ def format_message(sig: Signal, kind: str, extras: dict[str, Any], prefix: str =
             f"volume {min(sig.vol_ratio, 99.0):.1f}x | velocity accelerating | "
             f"invalidation {sig.invalidation:.2f} | possible 1-5m expansion."
         )
+    env = str(extras.get("env", "")) or _context_clause(sig).lstrip(" |")
+    env_part = f" | {env}" if env else ""
     if kind == "CONFIRMED":
         micro = "micro-high" if sig.direction > 0 else "micro-low"
-        ctx = _context_clause(sig)
+        reason = str(extras.get("reason", "volume sustained"))
         return (
-            f"{head} | held {sig.trigger_price:.2f} | volume sustained | "
-            f"new {micro} {sig.micro_extreme:.2f}{ctx}."
+            f"{head} | held {sig.trigger_price:.2f} | {reason} | "
+            f"new {micro} {sig.micro_extreme:.2f}{env_part}."
         )
     reason = str(extras.get("reason", "trigger lost"))
-    if reason == "no expansion progress":
-        return f"{head} | {sig.trigger_price:.2f} stalled | no expansion progress."
-    return f"{head} | lost {sig.trigger_price:.2f} trigger | {reason}."
+    if reason in ("no expansion progress", "environment against"):
+        return f"{head} | {sig.trigger_price:.2f} stalled | {reason}{env_part}."
+    return f"{head} | lost {sig.trigger_price:.2f} trigger | {reason}{env_part}."
 
 
 @dataclass(order=True)

@@ -1,5 +1,5 @@
 # early_trend_scanner configuration.
-# Secrets (API keys, Telegram token/chat id) come from .env â€” never from this file.
+# Secrets (API keys, Telegram token/chat id) come from .env — never from this file.
 
 symbols: [TSLA, NVDA, AAPL, PLTR, AMD, AMZN, META, MSFT, GOOGL, INTC, MU, AVGO, MSTR, HOOD]
 
@@ -8,7 +8,7 @@ data:
   # "iex" = single-exchange feed, inadequate for consolidated volume; the program
   #         refuses to run with feed=iex unless demo_mode=true, and every Telegram
   #         message is then prefixed with "DEMO".
-  # 2026-08-31: account probed â€” real-time SIP returns 409 (needs Algo Trader Plus).
+  # 2026-08-31: account probed — real-time SIP returns 409 (needs Algo Trader Plus).
   # Running labeled DEMO on IEX until upgraded; then set feed: sip, demo_mode: false.
   feed: iex
   demo_mode: true
@@ -48,6 +48,8 @@ engine:
   break_max_open_bps: 40.0      # opening-phase extension cap (gap-and-go movers run hotter)
   open_phase_min: 10.0          # minutes after the open using the opening-phase cap
   vel_min_bps_s: 2.0            # minimum 5-second directional velocity (bps/s)
+  vel15_max_bps_s: 2.0          # corpus-mined late-chase kill (robust 5/6 sessions)
+  range_exp_max: 3.0            # 15s range already fully expanded = late entry (4/6)
   accel_ratio: 1.10             # 5s velocity must exceed accel_ratio * 15s velocity
   vol_accel_min: 3.0            # 5s volume vs avg 5s over the prior 60s
   vol_base_min: 2.0             # 5s volume vs same-minute-of-day baseline
@@ -83,10 +85,10 @@ engine:
                                 # a normal-hours stop distance is pure noise there
   invalidation_range_frac: 0.35 # fraction of the recent 5m range used for invalidation
   invalidation_max_bps: 40.0
-  confirm_min_s: 12.0           # earliest CONFIRMED follow-up
+  confirm_min_s: 60.0           # verdict ~1 minute after the alert (owner directive)
   confirm_min_r: 0.5            # CONFIRMED needs this much progress beyond the trigger,
                                 # measured in invalidation-distance units (raise = pickier)
-  observe_max_s: 45.0           # follow-up decision deadline after EARLY
+  observe_max_s: 80.0           # follow-up decision deadline after EARLY
   fail_buffer_bps: 2.0          # trigger recross needed for FAILED
   cooldown_failed_s: 300.0
   cooldown_confirmed_s: 600.0
@@ -115,7 +117,7 @@ ml:
   engine: auto                  # auto | river | builtin  (auto -> river Adaptive Random
                                 # Forest if importable, else builtin online logistic)
   min_labels: 40                # labels required before ML influences live thresholds
-  prob_gate_min: 0.55           # signals below this model probability are suppressed (once active);
+  prob_gate_min: 0.60           # signals below this model probability are suppressed (once active);
                                 # chosen on the 2026-08-28 v3 holdout: 71% cut incl. veto+bypass
   prob_bypass_score: 0.80       # raw trigger score at/above this always delivers: market
                                 # context (SPY/VIX) informs the model but must never veto

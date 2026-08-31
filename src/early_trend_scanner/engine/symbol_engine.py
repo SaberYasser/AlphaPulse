@@ -62,6 +62,8 @@ class SymbolEngine:
         self.catchup = False  # True while replaying a recovery backfill
         self._or_locked = False
         self.session_open_ts = 0.0
+        self.pmh = 0.0  # premarket extremes: opening trend-continuation anchors
+        self.pml = 0.0
 
     # ------------------------------------------------------------------ setup
 
@@ -73,6 +75,8 @@ class SymbolEngine:
         self, pdh: float, pdl: float, pdc: float, pmh: float, pml: float
     ) -> None:
         self.book.set_static(pdh=pdh, pdl=pdl, pdc=pdc, pmh=pmh, pml=pml)
+        self.pmh = pmh
+        self.pml = pml
 
     def seed_minutes(self, minutes: list[Minute]) -> None:
         self.agg.seed_minutes(minutes)
@@ -106,7 +110,7 @@ class SymbolEngine:
 
         if self.machine.phase == Phase.FIRED:
             imb5, share5, vol5 = self._flow5()
-            self.machine.observe(t.ts, t.price, imb5, share5, vol5)
+            self.machine.observe(t.ts, t.price, imb5, share5, vol5, self._resolution_env(t.ts))
             return
 
         if not self._may_evaluate(t):
@@ -121,9 +125,29 @@ class SymbolEngine:
         if price <= 0.0:
             return
         imb5, share5, vol5 = self._flow5()
-        self.machine.on_tick(now_ts, price, imb5, share5, vol5)
+        self.machine.on_tick(now_ts, price, imb5, share5, vol5, self._resolution_env(now_ts))
         if self.machine.phase != Phase.FIRED:
             self._evaluate_trend(now_ts, price)
+
+    def _resolution_env(self, ts: float) -> tuple[float, float, float]:
+        """(aligned market vel, fear 5m vel, event-tape volume multiple).
+
+        Environment at RESOLUTION time for the follow-up verdict: market flow
+        aligned with the live signal's direction, the fear-proxy trend, and a
+        news-shock proxy — 60s volume as a multiple of the minute-of-day
+        baseline (breaking news manifests as an event-volume burst).
+        """
+        sig = self.machine.signal
+        if sig is None:
+            return (0.0, 0.0, 0.0)
+        mkt_al = fear = 0.0
+        if self.context is not None:
+            _m1, mkt_al, _f1, fear = self.context.features(ts, sig.direction)
+        v60, _b, _s, _n, _d = self.agg.window(60)
+        minute_idx = minute_of_session(ts, self.session_open_ts) if self.session_open_ts > 0 else 0
+        base_min = self.baseline.minute_volume(self.symbol, minute_idx)
+        event_vol = v60 / base_min if base_min > 0 else 0.0
+        return (mkt_al, fear, event_vol)
 
     def _evaluate_trend(self, now_ts: float, price: float) -> None:
         """Sustained-pressure detector: the band between micro-burst and grind.
@@ -159,15 +183,26 @@ class SymbolEngine:
         if base_min > 0 and v60 < cfg.trend_vol_base_min * base_min:
             return
         lookback = list(self.agg.minutes)[-cfg.trend_extreme_min :]
+        highs = [m.high for m in lookback]
+        lows = [m.low for m in lookback]
         if len(lookback) < cfg.trend_extreme_min:
-            return  # not enough history for a meaningful local extreme
+            # Opening continuation (owner directive): with a young session,
+            # anchor the extreme to the premarket range instead — a premarket
+            # trend still running through the bell is exactly the pattern to
+            # keep, and it must beat BOTH the premarket and session extremes.
+            if len(lookback) < 3 or (self.pmh <= 0.0 and self.pml <= 0.0):
+                return
+            if self.pmh > 0.0:
+                highs.append(self.pmh)
+            if self.pml > 0.0:
+                lows.append(self.pml)
         if direction > 0:
-            ref = max(m.high for m in lookback)
+            ref = max(highs)
             if price <= ref:
                 return
             kind = LevelKind.RANGE_H
         else:
-            ref = min(m.low for m in lookback)
+            ref = min(lows)
             if price >= ref:
                 return
             kind = LevelKind.RANGE_L

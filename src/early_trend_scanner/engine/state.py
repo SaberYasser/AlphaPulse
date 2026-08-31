@@ -174,6 +174,16 @@ class StateMachine:
             return self._reject("velocity", snap)
         if not snap.accelerating:
             return self._reject("not_accelerating", snap)
+        # Corpus-mined late-chase kills (robust across >=4 of 6 sessions): a
+        # 15s velocity already hot, or a 15s range already expanded WITHOUT a
+        # fresh volume explosion, means the move is underway — the earliest
+        # stage is gone. The volume exemption mirrors the fake-start family:
+        # a genuine instant impulse expands the range too, but does it on
+        # exploding volume; a chase does it on tired volume.
+        if snap.vel15_bps_s * snap.direction > cfg.vel15_max_bps_s:
+            return self._reject("late_chase", snap)
+        if snap.range_exp > cfg.range_exp_max and snap.vol_ratio_prev < cfg.fresh_break_vol_max:
+            return self._reject("late_chase", snap)
 
         # --- volume trigger gates ----------------------------------------
         if snap.vol_ratio_prev < cfg.vol_accel_min * self._vol_mult(ts):
@@ -361,11 +371,16 @@ class StateMachine:
         imb5: float,
         share_up5: float,
         vol5: float,
+        env: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
         """Called on every print and every second tick while FIRED.
 
         `share_up5` is the buy share of classified volume; it is converted to
-        the share in the signal's direction here.
+        the share in the signal's direction here. `env` carries RESOLUTION-
+        time environment: (market velocity aligned with the signal, fear-proxy
+        5m velocity, event-tape volume multiple vs baseline) — used only as a
+        bounded tiebreaker on marginal progress and quoted in the follow-up
+        justification.
         """
         sig = self.signal
         if self.phase != Phase.FIRED or sig is None:
@@ -373,6 +388,7 @@ class StateMachine:
         cfg = self.cfg
         d = sig.direction
         dir_share5 = share_up5 if d > 0 else 1.0 - share_up5
+        self._last_env = env
 
         if (price - sig.micro_extreme) * d > 0:
             sig.micro_extreme = price
@@ -403,7 +419,16 @@ class StateMachine:
         inv_dist = abs(sig.trigger_price - sig.invalidation)
         progress_r = (sig.micro_extreme - sig.trigger_price) * d / inv_dist if inv_dist > 0 else 0.0
 
+        # The verdict runs ~1 minute after the alert (owner directive): enough
+        # time for real progress evidence plus an environmental read.
         elapsed = ts - sig.alert_ts
+        mkt_al, fear, event_vol = env
+        # Environment supports the move when the market flows with it and the
+        # fear proxy is not pushing against it (rising fear supports shorts).
+        fear_with = -fear * d  # positive when fear moves in the signal's favor
+        env_support = mkt_al > 0.02 or fear_with > 0.03
+        env_against = mkt_al < -0.03 or fear_with < -0.05
+
         if elapsed >= cfg.confirm_min_s:
             beyond = (price - sig.trigger_price) * d > 0
             flow_ok = dir_share5 >= 0.5 or imb5 * d > 0
@@ -411,10 +436,38 @@ class StateMachine:
                 self._resolve(sig, ts, "CONFIRMED", "volume sustained")
                 return
         if elapsed >= cfg.observe_max_s:
-            if (price - sig.trigger_price) * d > 0 and progress_r >= cfg.confirm_min_r:
+            beyond = (price - sig.trigger_price) * d > 0
+            if beyond and progress_r >= cfg.confirm_min_r:
                 self._resolve(sig, ts, "CONFIRMED", "held at deadline")
+            elif beyond and progress_r >= 0.7 * cfg.confirm_min_r and env_support:
+                # Marginal progress + supportive environment: the tiebreaker
+                # confirms rather than fails (bounded to near-misses only).
+                self._resolve(sig, ts, "CONFIRMED", "progress with tailwind")
+            elif beyond and progress_r >= cfg.confirm_min_r * 0.9 and env_against:
+                self._resolve(sig, ts, "FAILED", "environment against")
             else:
                 self._resolve(sig, ts, "FAILED", "no expansion progress")
+
+    _last_env: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def _env_clause(self) -> str:
+        """Brief environmental justification for the follow-up message."""
+        sig = self.signal
+        if sig is None:
+            return ""
+        mkt_al, fear, event_vol = self._last_env
+        parts = []
+        if mkt_al > 0.02:
+            parts.append("market with")
+        elif mkt_al < -0.03:
+            parts.append("market against")
+        if fear > 0.03:
+            parts.append("fear rising")
+        elif fear < -0.03:
+            parts.append("fear easing")
+        if event_vol >= 5.0:
+            parts.append("event tape")
+        return ", ".join(parts)
 
     def _resolve(self, sig: Signal, ts: float, state: str, reason: str) -> None:
         sig.resolution = state
@@ -423,7 +476,7 @@ class StateMachine:
         # Hard cap: EARLY + at most 2 follow-ups per setup (we send exactly 1).
         if not sig.suppressed and sig.followups_sent < 2:
             sig.followups_sent += 1
-            self.hooks.emit(sig, state, {"reason": reason})
+            self.hooks.emit(sig, state, {"reason": reason, "env": self._env_clause()})
         self.hooks.on_signal_final(sig)
         if sig.suppressed:
             # Nothing was sent, so there is no alert spam to throttle — a
@@ -440,8 +493,16 @@ class StateMachine:
 
     # ------------------------------------------------------------------- tick
 
-    def on_tick(self, ts: float, price: float, imb5: float, share_up5: float, vol5: float) -> None:
+    def on_tick(
+        self,
+        ts: float,
+        price: float,
+        imb5: float,
+        share_up5: float,
+        vol5: float,
+        env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> None:
         if self.phase == Phase.FIRED:
-            self.observe(ts, price, imb5, share_up5, vol5)
+            self.observe(ts, price, imb5, share_up5, vol5, env)
         elif self.phase == Phase.COOLDOWN and ts >= self.cooldown_until:
             self.phase = Phase.SCANNING
