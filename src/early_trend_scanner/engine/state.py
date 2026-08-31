@@ -171,13 +171,16 @@ class StateMachine:
         imb5: float,
         share_up5: float,
         vol5: float,
+        env: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
         """Follow a FIRED signal to CONFIRMED/FAILED (withheld).
 
-        CONFIRMED requires real expansion progress in invalidation-distance
-        units, not mere survival; the opening phase suspends the twitch-
-        sensitive recross fail so only the hard stop or the progress deadline
-        can end an opening signal.
+        The verdict runs ~1 minute after the alert. CONFIRMED requires real
+        expansion progress in invalidation-distance units, not mere survival;
+        `env` carries resolution-time environment (market alignment, fear
+        velocity, event-tape volume) used as a bounded tiebreaker on marginal
+        progress and quoted as a brief justification in the follow-up message.
+        The opening phase suspends the twitch-sensitive recross fail.
         """
         raise NotImplementedError(_PRIVATE)
 
@@ -196,6 +199,14 @@ class StateMachine:
 
     _range5m_bps_value: float = 15.0
 
-    def on_tick(self, ts: float, price: float, imb5: float, share5: float, vol5: float) -> None:
+    def on_tick(
+        self,
+        ts: float,
+        price: float,
+        imb5: float,
+        share5: float,
+        vol5: float,
+        env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    ) -> None:
         """Wall-clock upkeep for FIRED deadlines on quiet tape (withheld)."""
         raise NotImplementedError(_PRIVATE)

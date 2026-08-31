@@ -41,6 +41,8 @@ engine:
   break_max_open_bps: 40.0      # opening-phase extension cap (gap-and-go runs hotter)
   open_phase_min: 10.0
   vel_min_bps_s: 1.5
+  vel15_max_bps_s: 2.0          # corpus-mined late-chase kill
+  range_exp_max: 3.0            # volume-exempt late-entry kill
   accel_ratio: 1.10
   vol_accel_min: 2.5
   vol_base_min: 1.5
@@ -65,9 +67,9 @@ engine:
   open_range_floor_bps: 100.0   # opening invalidations breathe with opening volatility
   invalidation_range_frac: 0.35
   invalidation_max_bps: 40.0
-  confirm_min_s: 12.0
+  confirm_min_s: 60.0           # verdict ~1 minute after the alert
   confirm_min_r: 0.5            # CONFIRMED needs real progress, in invalidation units
-  observe_max_s: 45.0
+  observe_max_s: 80.0
   fail_buffer_bps: 2.0
   cooldown_failed_s: 240.0
   cooldown_confirmed_s: 480.0

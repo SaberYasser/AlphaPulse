@@ -108,8 +108,11 @@ system processes **~9.4M events** (26k–50k events/sec in replay) and delivers 
    signal, ten in six seconds is noise). Suppressed setups cool down for less time than delivered
    ones — nothing was sent, so there is no spam to throttle.
 
-Follow-ups are equally strict: **CONFIRMED requires real expansion progress** (a configurable
-fraction of the invalidation distance beyond the trigger), not mere survival. "Held the level but
+Follow-ups are equally strict: the verdict runs **one minute after the alert** and
+**CONFIRMED requires real expansion progress** (a configurable fraction of the invalidation
+distance beyond the trigger), not mere survival. Resolution-time environment — market
+alignment, fear velocity, an event-volume news proxy — acts as a bounded tiebreaker on
+marginal progress, and every follow-up carries a brief justification. "Held the level but
 went nowhere" resolves as FAILED. Confirmations carry market-context awareness:
 `…| against market, fear rising.`
 
