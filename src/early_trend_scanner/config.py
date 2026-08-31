@@ -64,6 +64,8 @@ class EngineCfg:
     break_max_open_bps: float = 40.0  # wider anti-chase cap during the opening minutes
     open_phase_min: float = 10.0  # minutes after the open treated as the opening phase
     vel_min_bps_s: float = 1.0
+    vel15_max_bps_s: float = 2.0  # 15s velocity already hotter = the move is underway (chase)
+    range_exp_max: float = 3.0  # 15s range already fully expanded = late entry
     accel_ratio: float = 1.10
     vol_accel_min: float = 2.0
     vol_base_min: float = 1.5
@@ -88,9 +90,9 @@ class EngineCfg:
     open_range_floor_bps: float = 100.0  # opening-phase floor for the range feeding invalidation
     invalidation_range_frac: float = 0.35
     invalidation_max_bps: float = 40.0
-    confirm_min_s: float = 12.0
+    confirm_min_s: float = 60.0  # verdict ~1 minute after the alert (owner directive)
     confirm_min_r: float = 0.5  # progress beyond trigger required, in invalidation-distance units
-    observe_max_s: float = 45.0
+    observe_max_s: float = 80.0
     fail_buffer_bps: float = 2.0
     cooldown_failed_s: float = 120.0
     cooldown_confirmed_s: float = 240.0
