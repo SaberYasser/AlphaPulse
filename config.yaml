@@ -132,6 +132,7 @@ ml:
 
 telegram:
   expected_username: YassirSaber
+  prefix: ""                    # live project — no DEMO branding (owner's call, 2026-08-31)
   max_retries: 4
   send_timeout_s: 5.0
   dedupe_size: 512

@@ -54,7 +54,7 @@ class ScannerApp:
             max_retries=cfg.telegram.max_retries,
             send_timeout_s=cfg.telegram.send_timeout_s,
             dedupe_size=cfg.telegram.dedupe_size,
-            prefix="DEMO " if cfg.data.demo_mode else "",
+            prefix=cfg.telegram.prefix,
         )
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         self._stopping = asyncio.Event()

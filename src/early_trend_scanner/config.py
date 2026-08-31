@@ -137,6 +137,10 @@ class MlCfg:
 @dataclass(frozen=True)
 class TelegramCfg:
     expected_username: str = "YassirSaber"
+    # Optional label prepended to every message (e.g. "DEMO "). Decoupled from
+    # data.demo_mode at the owner's direction 2026-08-31: the feed flag stays
+    # an explicit acknowledgment of single-exchange data, not a branding.
+    prefix: str = ""
     max_retries: int = 4
     send_timeout_s: float = 5.0
     dedupe_size: int = 512
@@ -247,8 +251,8 @@ def validate(cfg: Config) -> None:
     if d.feed == "iex" and not d.demo_mode:
         raise ValueError(
             "data.feed=iex covers a single exchange and cannot produce accurate "
-            "consolidated volume. Set data.demo_mode=true to run anyway (alerts "
-            "are labeled DEMO), or use feed=sip."
+            "consolidated volume. Set data.demo_mode=true to acknowledge and "
+            "run anyway, or use feed=sip."
         )
     if cfg.session.after_close not in ("exit", "pause"):
         raise ValueError("session.after_close must be 'exit' or 'pause'")
