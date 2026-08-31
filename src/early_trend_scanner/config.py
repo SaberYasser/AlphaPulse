@@ -51,6 +51,11 @@ class DataCfg:
 class SessionCfg:
     start_lead_min: int = 8
     after_close: str = "exit"
+    # Delivery policy (owner directives 2026-08-31): no NEW alerts in the last
+    # hour (no fresh positions there); one recap message before the close.
+    # Both derive from the session close, so early-close days behave.
+    quiet_last_min: int = 60
+    recap_min_before_close: int = 30
     opening_range_min: int = 5
 
 

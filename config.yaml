@@ -38,6 +38,9 @@ session:
   start_lead_min: 8             # process may start this many minutes before the open
   after_close: exit             # exit | pause  (pause = zero-work idle, no scanning)
   opening_range_min: 5          # opening-range window in minutes
+  quiet_last_min: 60            # no NEW alerts in the last hour (no fresh positions there);
+                                # signals still fire in shadow and keep training the model
+  recap_min_before_close: 30    # one daily efficacy recap message (15:30 on normal days)
 
 engine:
   ring_seconds: 600             # 1-second aggregates kept per symbol (>= outcome window)
