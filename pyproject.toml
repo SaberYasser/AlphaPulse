@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "early-trend-scanner"
+version = "0.1.0"
+description = "Early intraday expansion detector for US equities with Telegram signals and online learning"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "aiohttp>=3.10,<4",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "tzdata>=2024.1",
+    "river>=0.21",
+]
+
+[project.optional-dependencies]
+fast = ["orjson>=3.9"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+ets = "early_trend_scanner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:river.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "RUF"]
+# RUF012: mutable class attrs; RUF001-003: em-dashes in prose are intentional
+ignore = ["RUF012", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true
+no_implicit_optional = true
+mypy_path = "src"
+packages = ["early_trend_scanner"]
