@@ -77,6 +77,17 @@ engine:
   max_alerts_hour_total: 12
   max_alerts_burst: 3
   min_gap_same_symbol_s: 90.0
+  # Sustained-pressure ("trend onset") detector: the band between micro-burst
+  # and grind — a 60-90s escalator on dominant one-sided volume making new
+  # local extremes. Rule-pure until the model has learned the class.
+  trend_detector: true
+  trend_window_s: 75
+  trend_min_bps: 25.0
+  trend_dir_share_min: 0.60
+  trend_vol_base_min: 1.8
+  trend_extreme_min: 15
+  trend_max_per_day: 2
+  trend_model_gated: false
 
 ml:
   engine: auto                  # auto -> River Adaptive Random Forest, builtin fallback

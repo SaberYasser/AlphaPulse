@@ -16,7 +16,7 @@ from .aggregator import SymbolAggregator
 from .baseline import MinuteBaseline
 from .context import ContextTracker
 from .features import Snapshot, compute_score, trigger_verb
-from .levels import Level, LevelBook
+from .levels import Level, LevelBook, LevelKind
 from .state import GlobalLimiter, MachineHooks, Phase, Rejection, Signal, StateMachine
 
 _EPS_VOL = 1e-9
@@ -122,8 +122,17 @@ class SymbolEngine:
             return
         imb5, share5, vol5 = self._flow5()
         self.machine.on_tick(now_ts, price, imb5, share5, vol5)
+        if self.machine.phase != Phase.FIRED:
+            self._evaluate_trend(now_ts, price)
 
-    # -------------------------------------------------------------- internals
+    def _evaluate_trend(self, now_ts: float, price: float) -> None:
+        """Sustained-pressure detector - PUBLIC INTERFACE.
+
+        The calibrated escalator conditions (net-move window, directional
+        volume dominance vs baseline, local-extreme requirement) are part
+        of the private overlay. See README - 'Protected core'.
+        """
+        return None
 
     def _classify_side(self, price: float) -> int:
         q = self.nbbo

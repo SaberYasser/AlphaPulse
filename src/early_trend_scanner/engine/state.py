@@ -181,6 +181,15 @@ class StateMachine:
         """
         raise NotImplementedError(_PRIVATE)
 
+    def consider_trend(self, snap: Snapshot) -> Signal | Rejection | None:
+        """Sustained-pressure ("trend onset") entry — the band between
+        micro-burst and grind: a 60-90s escalator on dominant one-sided
+        volume printing new local extremes. Shares every discipline mechanism
+        (cooldowns, structural re-arm, per-symbol/global/burst caps) and runs
+        rule-pure until the model has learned the class. Withheld.
+        """
+        raise NotImplementedError(_PRIVATE)
+
     def set_range5m_bps(self, value: float) -> None:
         """Recent 5-minute range in bps; sizes the invalidation distance."""
         self._range5m_bps_value = max(value, 1.0)

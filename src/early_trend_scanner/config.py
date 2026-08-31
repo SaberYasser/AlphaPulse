@@ -99,6 +99,18 @@ class EngineCfg:
     max_alerts_symbol_day: int = 12
     max_alerts_hour_total: int = 30
     max_alerts_burst: int = 3  # global cap inside any rolling minute (bell clusters)
+    # --- sustained-pressure ("trend onset") detector -----------------------
+    # Catches the band between micro-burst and grind: a 60-90s escalator with
+    # dominant one-sided volume making new local extremes. Rule-pure while the
+    # model learns the class (never model-suppressed when ungated).
+    trend_detector: bool = True
+    trend_window_s: int = 75  # net-move lookback
+    trend_min_bps: float = 25.0  # net directional move over the window
+    trend_dir_share_min: float = 0.60  # one-sided share of classified volume (60s)
+    trend_vol_base_min: float = 1.8  # 60s volume vs minute-of-day baseline
+    trend_extreme_min: int = 15  # must make a new N-minute high/low
+    trend_max_per_day: int = 2  # per symbol
+    trend_model_gated: bool = False  # enable after the model has seen the class
     min_gap_same_symbol_s: float = 30.0
 
 
@@ -125,6 +137,10 @@ class MlCfg:
 @dataclass(frozen=True)
 class TelegramCfg:
     expected_username: str = "YourTelegramUsername"
+    # Optional label prepended to every message (e.g. "DEMO "). Decoupled from
+    # data.demo_mode at the owner's direction 2026-08-31: the feed flag stays
+    # an explicit acknowledgment of single-exchange data, not a branding.
+    prefix: str = ""
     max_retries: int = 4
     send_timeout_s: float = 5.0
     dedupe_size: int = 512
@@ -235,8 +251,8 @@ def validate(cfg: Config) -> None:
     if d.feed == "iex" and not d.demo_mode:
         raise ValueError(
             "data.feed=iex covers a single exchange and cannot produce accurate "
-            "consolidated volume. Set data.demo_mode=true to run anyway (alerts "
-            "are labeled DEMO), or use feed=sip."
+            "consolidated volume. Set data.demo_mode=true to acknowledge and "
+            "run anyway, or use feed=sip."
         )
     if cfg.session.after_close not in ("exit", "pause"):
         raise ValueError("session.after_close must be 'exit' or 'pause'")

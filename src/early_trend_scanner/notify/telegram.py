@@ -49,6 +49,12 @@ def format_message(sig: Signal, kind: str, extras: dict[str, Any], prefix: str =
     t = et_hms(sig.resolution_ts if kind != "EARLY" else sig.alert_ts)
     head = f"{prefix}{kind} {sig.dir_str} {sig.symbol} {t} ET"
     if kind == "EARLY":
+        if sig.trigger_verb == "trend":
+            return (
+                f"{head} | {sig.trigger_price:.2f} trend | "
+                f"volume {min(sig.vol_ratio, 99.0):.1f}x baseline | pressure sustained | "
+                f"invalidation {sig.invalidation:.2f} | possible 1-5m expansion."
+            )
         return (
             f"{head} | {sig.trigger_price:.2f} {sig.trigger_verb} | "
             f"volume {min(sig.vol_ratio, 99.0):.1f}x | velocity accelerating | "

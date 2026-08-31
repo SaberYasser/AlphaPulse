@@ -113,6 +113,16 @@ fraction of the invalidation distance beyond the trigger), not mere survival. "H
 went nowhere" resolves as FAILED. Confirmations carry market-context awareness:
 `…| against market, fear rising.`
 
+**A second detector class covers the burst detector's blind band.** Instrumented replay of a
+missed midday mover revealed moves that are neither micro-bursts nor grinds: 60–90-second
+*escalators* at 1–2 bps/s on steadily building one-sided volume. A dedicated sustained-pressure
+detector fires on meaningful net movement over ~75 s carried by dominant directional volume above
+baseline while price prints new local extremes — evaluated at 1 Hz from the same O(1) aggregates,
+capped at 2/symbol/day, sharing every cooldown and rate cap, and kept rule-pure until the forest
+has learned the class (its signals are recorded and labeled like all others). On its first
+evaluated session it went 2-for-4 on strict 1.5R labels with ~90% of the move still ahead on its
+winners — versus ~34% for the burst class that day.
+
 ## ML training — online Adaptive Random Forest
 
 The learning layer is [River](https://riverml.xyz)'s `ARFClassifier` — an online ensemble of

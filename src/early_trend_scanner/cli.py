@@ -268,7 +268,7 @@ def cmd_telegram_test(args: argparse.Namespace) -> int:
     notifier = TelegramNotifier(
         token=secrets.telegram_token,
         chat_id=secrets.telegram_chat_id,
-        prefix="DEMO " if cfg.data.demo_mode else "",
+        prefix=cfg.telegram.prefix,
     )
     ok = asyncio.run(notifier.send_test())
     print("Telegram test message sent." if ok else "Telegram test FAILED.")

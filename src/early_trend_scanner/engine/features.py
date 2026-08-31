@@ -63,6 +63,7 @@ class Snapshot:
     mkt_al_5m: float = 0.0  # market-proxy 5m velocity (bps/s), aligned
     fear_1m: float = 0.0  # fear-proxy 1m velocity (bps/s), unaligned fast pulse
     fear_5m: float = 0.0  # fear-proxy 5m velocity (bps/s), unaligned trend
+    is_trend: float = 0.0  # 1.0 = sustained-pressure (trend-onset) detector class
     score: float = 0.0
 
     def to_features(self) -> dict[str, float]:
@@ -90,6 +91,7 @@ class Snapshot:
             "mkt_al_5m": self.mkt_al_5m,
             "fear_1m": self.fear_1m,
             "fear_5m": self.fear_5m,
+            "trend": self.is_trend,
         }
 
 
