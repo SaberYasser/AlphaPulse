@@ -1,8 +1,10 @@
-# Trend Detection with ML Fine-Tuning
+# ⚡ AlphaPulse
+
+### Self-learning early trend detection — an online Adaptive Random Forest that fine-tunes itself on every live market outcome
 
 **A production real-time equity scanner that detects the earliest stage of 1–5 minute price
-expansions — long and short, symmetrically — and fine-tunes its own selectivity every session
-with an online Adaptive Random Forest.**
+expansions — long and short, symmetrically — distilling 9M+ ticks per session into a handful of
+high-conviction alerts, and sharpening its own selectivity every single trading day.**
 
 Built in Python on Alpaca SIP/IEX market data, running live during US regular trading hours on
 Windows, delivering sub-40-word signals to Telegram within seconds of trigger conditions being met.
