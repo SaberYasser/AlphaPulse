@@ -1,0 +1,33 @@
+# secrets
+.env
+*.env
+!.env.example
+
+# runtime state
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+status.json
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# editors / os
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

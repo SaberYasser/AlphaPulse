@@ -1,0 +1,109 @@
+# early_trend_scanner configuration.
+# Secrets (API keys, Telegram token/chat id) come from .env — never from this file.
+#
+# NOTE (public repository): every threshold below is an ILLUSTRATIVE
+# placeholder, not the production calibration. The live values were tuned on
+# replayed consolidated-SIP sessions and are part of the private overlay,
+# together with the detection core they parameterize.
+
+symbols: [TSLA, NVDA, AAPL, PLTR, AMD, AMZN, META, MSFT, GOOGL, INTC, MU, AVGO, MSTR, HOOD]
+
+data:
+  feed: sip                     # "sip" consolidated (paid) | "iex" single-exchange
+  demo_mode: false              # iex refuses to run unless demo_mode (alerts tagged DEMO)
+  history_feed: sip             # price-level history (historical SIP is on every plan)
+  trading_base_url: https://paper-api.alpaca.markets
+  data_base_url: https://data.alpaca.markets
+  stream_base_url: wss://stream.data.alpaca.markets
+  baseline_sessions: 5
+  gap_reconnect_s: 10.0
+  recovery_min_gap_s: 2.0
+  stream_restart_max: 3
+  max_feed_latency_s: 3.0
+  queue_trades: 20000
+  queue_quotes: 10000
+  # Regime context tape: [market proxy, volatility/fear proxy] — streamed and
+  # aggregated (trades only; never scanned), feeding the model features.
+  context_symbols: [SPY, VXX]
+
+session:
+  start_lead_min: 8
+  after_close: exit             # exit | pause
+  opening_range_min: 5
+
+engine:
+  # --- placeholders: production calibration is private -----------------------
+  ring_seconds: 600
+  minutes_kept: 120
+  ready_bps: 10.0
+  break_min_bps: 3.0
+  break_max_bps: 25.0
+  break_max_open_bps: 40.0      # opening-phase extension cap (gap-and-go runs hotter)
+  open_phase_min: 10.0
+  vel_min_bps_s: 1.5
+  accel_ratio: 1.10
+  vol_accel_min: 2.5
+  vol_base_min: 1.5
+  baseline_skip_open_min: 2     # opening minutes use the mid-day volume ruler instead
+  imb_min: 0.25
+  persist_min_trades: 4
+  persist_window_s: 2.5
+  persist_min_span_s: 0.6
+  min_trades_2s: 3
+  single_print_max_frac: 0.70
+  fresh_break_veto: true
+  fresh_break_vol_max: 6.0
+  comp_veto_ratio: 1.0
+  imb15_blowoff_max: 0.55
+  fake_start_weight: 0.25
+  score_min: 0.60
+  sweep_window_s: 90.0
+  sweep_max_bps: 20.0
+  compression_max_ratio: 0.75
+  compression_relax: 0.90
+  invalidation_min_bps: 6.0
+  open_range_floor_bps: 100.0   # opening invalidations breathe with opening volatility
+  invalidation_range_frac: 0.35
+  invalidation_max_bps: 40.0
+  confirm_min_s: 12.0
+  confirm_min_r: 0.5            # CONFIRMED needs real progress, in invalidation units
+  observe_max_s: 45.0
+  fail_buffer_bps: 2.0
+  cooldown_failed_s: 240.0
+  cooldown_confirmed_s: 480.0
+  cooldown_suppressed_s: 180.0
+  re_arm_bps: 15.0
+  max_alerts_symbol_day: 6
+  max_alerts_hour_total: 12
+  max_alerts_burst: 3
+  min_gap_same_symbol_s: 90.0
+
+ml:
+  engine: auto                  # auto -> River Adaptive Random Forest, builtin fallback
+  min_labels: 40
+  prob_gate_min: 0.50
+  prob_bypass_score: 0.85       # exceptional raw evidence is never model-suppressed
+  outcome_window_s: 300
+  pos_multiple: 1.5
+  min_remaining_frac: 0.50
+  bound_low: 0.75
+  bound_high: 1.50
+  adapt_step: 0.02
+  revert_window: 30
+  revert_precision_drop: 0.15
+  checkpoint_min: 15
+
+telegram:
+  expected_username: YourTelegramUsername
+  max_retries: 4
+  send_timeout_s: 5.0
+  dedupe_size: 512
+
+storage:
+  instance_lock_port: 47113
+  db_path: data/scanner.db
+  retention_days: 90
+  status_path: data/status.json
+  model_dir: data/models
+  log_dir: logs
+  log_level: INFO
