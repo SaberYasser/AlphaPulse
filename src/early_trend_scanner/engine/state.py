@@ -172,11 +172,16 @@ class StateMachine:
         share_up5: float,
         vol5: float,
         env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        minute_slope_bps: float | None = None,
     ) -> None:
         """Follow a FIRED signal to CONFIRMED/FAILED (withheld).
 
         The verdict runs ~1 minute after the alert. CONFIRMED requires real
-        expansion progress in invalidation-distance units, not mere survival;
+        expansion progress in invalidation-distance units, not mere survival,
+        and the minute-scale trend (EMA20 slope of completed 1-min closes,
+        premarket-seeded) must not point against the signal — measured across
+        six sessions, demoted confirms averaged -41 bps to the cutoff while
+        kept ones averaged +39;
         `env` carries resolution-time environment (market alignment, fear
         velocity, event-tape volume) used as a bounded tiebreaker on marginal
         progress and quoted as a brief justification in the follow-up message.
@@ -207,6 +212,7 @@ class StateMachine:
         share5: float,
         vol5: float,
         env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        minute_slope_bps: float | None = None,
     ) -> None:
         """Wall-clock upkeep for FIRED deadlines on quiet tape (withheld)."""
         raise NotImplementedError(_PRIVATE)

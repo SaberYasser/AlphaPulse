@@ -113,8 +113,14 @@ Follow-ups are equally strict: the verdict runs **one minute after the alert** a
 distance beyond the trigger), not mere survival. Resolution-time environment — market
 alignment, fear velocity, an event-volume news proxy — acts as a bounded tiebreaker on
 marginal progress, and every follow-up carries a brief justification. "Held the level but
-went nowhere" resolves as FAILED. Confirmations carry market-context awareness:
-`…| against market, fear rising.`
+went nowhere" resolves as FAILED — and so does a pop whose **minute-scale trend still points
+the other way**: the verdict reads an incrementally maintained, premarket-seeded EMA20 of
+1-minute closes and refuses to confirm against its slope. That one condition came out of a
+six-session study of EMA/ATR candidates in which everything else (EMA crosses, ATR-normalized
+progress, extra model features) failed honest holdout tests; the survivor lifted the share of
+confirmations still moving favorably an hour before the close from 53% to 59% on all six of
+six sessions, roughly doubling the average post-confirmation move. Confirmations carry
+market-context awareness: `…| against market, fear rising.`
 
 **A second detector class covers the burst detector's blind band.** Instrumented replay of a
 missed midday mover revealed moves that are neither micro-bursts nor grinds: 60–90-second

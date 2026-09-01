@@ -139,6 +139,10 @@ async def warmup(
             pmh = max(b.high for b in pm)
             pml = min(b.low for b in pm)
         eng.seed_static_levels(pdh=pdh, pdl=pdl, pdc=pdc, pmh=pmh, pml=pml)
+        # Premarket closes seed the minute-trend EMA (before any RTH minutes
+        # fold in) so verdict slopes are defined from the opening bell.
+        if pm:
+            eng.agg.seed_ema([b.close for b in pm])
         # Fresh start at/near the bell: seed the ring with the last premarket
         # print so velocity/acceleration are live from the first RTH second.
         if pm and now_ts <= session.open_ts + 60:
