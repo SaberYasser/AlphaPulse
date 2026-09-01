@@ -98,6 +98,10 @@ class EngineCfg:
     confirm_min_s: float = 60.0  # verdict ~1 minute after the alert (owner directive)
     confirm_min_r: float = 0.5  # progress beyond trigger required, in invalidation-distance units
     observe_max_s: float = 80.0
+    # Minute-trend agreement at the verdict: the aligned EMA20 slope (bps over
+    # 3 completed minutes) must be at least this, or the verdict is FAILED
+    # ("minute trend against"). 0.0 = a sign test, deliberately untuned.
+    confirm_slope_min_bps: float = 0.0
     fail_buffer_bps: float = 2.0
     cooldown_failed_s: float = 120.0
     cooldown_confirmed_s: float = 240.0

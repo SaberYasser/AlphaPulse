@@ -110,7 +110,15 @@ class SymbolEngine:
 
         if self.machine.phase == Phase.FIRED:
             imb5, share5, vol5 = self._flow5()
-            self.machine.observe(t.ts, t.price, imb5, share5, vol5, self._resolution_env(t.ts))
+            self.machine.observe(
+                t.ts,
+                t.price,
+                imb5,
+                share5,
+                vol5,
+                self._resolution_env(t.ts),
+                self.agg.ema_slope_bps(),
+            )
             return
 
         if not self._may_evaluate(t):
@@ -125,7 +133,8 @@ class SymbolEngine:
         if price <= 0.0:
             return
         imb5, share5, vol5 = self._flow5()
-        self.machine.on_tick(now_ts, price, imb5, share5, vol5, self._resolution_env(now_ts))
+        slope = self.agg.ema_slope_bps()
+        self.machine.on_tick(now_ts, price, imb5, share5, vol5, self._resolution_env(now_ts), slope)
         if self.machine.phase != Phase.FIRED:
             self._evaluate_trend(now_ts, price)
 

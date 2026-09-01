@@ -544,3 +544,71 @@ def test_env_neutral_marginal_progress_fails(harness: Harness) -> None:
     marginal = sig.trigger_price + 0.4 * inv_dist
     m.observe(sig.alert_ts + 85.0, marginal, 0.5, 0.8, 1000.0, env=(0.0, 0.0, 1.0))
     assert sig.resolution == "FAILED"
+
+
+# ------------------------------------------------- minute-trend verdict check
+
+
+def test_verdict_demoted_when_minute_trend_against(harness: Harness) -> None:
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    sig = m.consider(_passing_snap(), 0.55)
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    progressed = sig.trigger_price + 0.6 * inv_dist
+    m.observe(
+        sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0,
+        minute_slope_bps=-2.0,
+    )
+    assert sig.resolution == "FAILED"
+    assert sig.resolution_reason == "minute trend against"
+
+
+def test_verdict_confirms_with_minute_trend_aligned(harness: Harness) -> None:
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    sig = m.consider(_passing_snap(), 0.55)
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    progressed = sig.trigger_price + 0.6 * inv_dist
+    m.observe(
+        sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0,
+        minute_slope_bps=2.0,
+    )
+    assert sig.resolution == "CONFIRMED"
+
+
+def test_verdict_neutral_when_slope_unknown(harness: Harness) -> None:
+    # Missing history (None) must never fail a signal: neutral pass.
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    sig = m.consider(_passing_snap(), 0.55)
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    progressed = sig.trigger_price + 0.6 * inv_dist
+    m.observe(sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0)
+    assert sig.resolution == "CONFIRMED"
+
+
+def test_verdict_slope_symmetric_for_down_signals(harness: Harness) -> None:
+    m = harness.engine.machine
+    m.set_range5m_bps(100.0)
+    snap = _passing_snap(
+        direction=-1,
+        price=100.00,
+        level_price=100.05,
+        vel5_bps_s=-3.0,
+        vel15_bps_s=-1.5,
+        imb5=-0.5,
+        imb15=-0.35,
+        quote_imb=-0.1,
+        dist_vwap_bps=-5.0,
+    )
+    sig = m.consider(snap, 0.55)
+    assert sig is not None and sig.direction == -1
+    inv_dist = abs(sig.trigger_price - sig.invalidation)
+    progressed = sig.trigger_price - 0.6 * inv_dist
+    # rising minute trend argues against a short: demoted
+    m.observe(
+        sig.alert_ts + 61.0, progressed, imb5=-0.5, share_up5=0.2, vol5=1000.0,
+        minute_slope_bps=2.0,
+    )
+    assert sig.resolution == "FAILED"
+    assert sig.resolution_reason == "minute trend against"

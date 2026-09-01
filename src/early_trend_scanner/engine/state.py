@@ -372,6 +372,7 @@ class StateMachine:
         share_up5: float,
         vol5: float,
         env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        minute_slope_bps: float | None = None,
     ) -> None:
         """Called on every print and every second tick while FIRED.
 
@@ -380,7 +381,11 @@ class StateMachine:
         time environment: (market velocity aligned with the signal, fear-proxy
         5m velocity, event-tape volume multiple vs baseline) — used only as a
         bounded tiebreaker on marginal progress and quoted in the follow-up
-        justification.
+        justification. `minute_slope_bps` is the symbol's own EMA20 minute-
+        trend slope: a verdict may only CONFIRM when it does not point against
+        the signal (measured 6/6 days: demoted confirms averaged -45 bps to
+        the 15:00 cutoff vs +39 for kept ones). None = not enough bars =
+        neutral.
         """
         sig = self.signal
         if self.phase != Phase.FIRED or sig is None:
@@ -428,18 +433,28 @@ class StateMachine:
         fear_with = -fear * d  # positive when fear moves in the signal's favor
         env_support = mkt_al > 0.02 or fear_with > 0.03
         env_against = mkt_al < -0.03 or fear_with < -0.05
+        # A confirmation predicts continuation, so the minute-scale trend must
+        # agree in sign at the verdict: a pop whose EMA20 is still bending the
+        # other way is a fade, however far the micro-extreme travelled.
+        slope_ok = minute_slope_bps is None or minute_slope_bps * d >= cfg.confirm_slope_min_bps
 
         if elapsed >= cfg.confirm_min_s:
             beyond = (price - sig.trigger_price) * d > 0
             flow_ok = dir_share5 >= 0.5 or imb5 * d > 0
             if beyond and progress_r >= cfg.confirm_min_r and flow_ok and vol5 > 0:
-                self._resolve(sig, ts, "CONFIRMED", "volume sustained")
+                if slope_ok:
+                    self._resolve(sig, ts, "CONFIRMED", "volume sustained")
+                else:
+                    self._resolve(sig, ts, "FAILED", "minute trend against")
                 return
         if elapsed >= cfg.observe_max_s:
             beyond = (price - sig.trigger_price) * d > 0
             if beyond and progress_r >= cfg.confirm_min_r:
-                self._resolve(sig, ts, "CONFIRMED", "held at deadline")
-            elif beyond and progress_r >= 0.7 * cfg.confirm_min_r and env_support:
+                if slope_ok:
+                    self._resolve(sig, ts, "CONFIRMED", "held at deadline")
+                else:
+                    self._resolve(sig, ts, "FAILED", "minute trend against")
+            elif beyond and progress_r >= 0.7 * cfg.confirm_min_r and env_support and slope_ok:
                 # Marginal progress + supportive environment: the tiebreaker
                 # confirms rather than fails (bounded to near-misses only).
                 self._resolve(sig, ts, "CONFIRMED", "progress with tailwind")
@@ -501,8 +516,9 @@ class StateMachine:
         share_up5: float,
         vol5: float,
         env: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        minute_slope_bps: float | None = None,
     ) -> None:
         if self.phase == Phase.FIRED:
-            self.observe(ts, price, imb5, share_up5, vol5, env)
+            self.observe(ts, price, imb5, share_up5, vol5, env, minute_slope_bps)
         elif self.phase == Phase.COOLDOWN and ts >= self.cooldown_until:
             self.phase = Phase.SCANNING

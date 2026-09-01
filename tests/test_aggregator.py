@@ -107,3 +107,40 @@ def test_preopen_seed_noop_when_ring_has_data() -> None:
     agg.on_trade(trade(T0 + 1.0, 99.1, size=10))
     agg.seed_preopen(50.0, T0 + 2.0)  # must refuse: real data present
     assert agg.last_price != 50.0
+
+
+def test_ema_slope_none_until_enough_history() -> None:
+    agg = SymbolAggregator("X")
+    assert agg.ema_slope_bps() is None
+    agg.seed_ema([100.0, 100.1, 100.2])
+    agg.last_price = 100.2
+    assert agg.ema_slope_bps() is None  # 3 EMA values: no 3-bar span yet
+    agg.seed_ema([100.3])
+    assert agg.ema_slope_bps() is not None
+
+
+def test_ema_slope_sign_tracks_minute_trend() -> None:
+    agg = SymbolAggregator("X")
+    agg.seed_ema([100.0 + 0.05 * i for i in range(25)])  # rising premarket
+    agg.last_price = 101.2
+    up = agg.ema_slope_bps()
+    assert up is not None and up > 0
+    # live minutes now fall: folding completed falling minutes flips the slope
+    start = T0
+    for i in range(6 * 60):
+        agg.on_trade(trade(start + i, 101.2 - i * 0.01, size=10))
+    down = agg.ema_slope_bps()
+    assert down is not None and down < 0
+
+
+def test_seed_minutes_feeds_ema() -> None:
+    from early_trend_scanner.data.models import Minute
+
+    agg = SymbolAggregator("X")
+    mins = [
+        Minute(ts=T0 + i * 60, open=100.0, high=100.2, low=99.9, close=100.0 + 0.1 * i)
+        for i in range(6)
+    ]
+    agg.seed_minutes(mins)
+    slope = agg.ema_slope_bps()
+    assert slope is not None and slope > 0

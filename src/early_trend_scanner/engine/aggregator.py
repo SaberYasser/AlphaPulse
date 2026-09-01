@@ -70,6 +70,12 @@ class SymbolAggregator:
         self.last_price: float = 0.0  # last price-forming print
         self.last_flow_price: float = 0.0  # last flow-eligible print (tick rule)
 
+        # Minute-trend tracker: EMA20 of completed 1-min closes, premarket-
+        # seeded by warmup. hist keeps the last 4 EMA values so the verdict can
+        # read the slope over a 3-bar span in O(1).
+        self._ema20: float | None = None
+        self._ema20_hist: deque[float] = deque(maxlen=4)
+
         # Session context (set by warmup/engine)
         self.session_open_ts: float = 0.0
         self.opening_range_end_ts: float = 0.0
@@ -209,6 +215,7 @@ class SymbolAggregator:
         m = self._min_acc
         if m is not None and m.ts != m_ts:
             self.minutes.append(m)
+            self._ema_update(m.close)
             if self.on_minute is not None:
                 self.on_minute(m)
             m = None
@@ -260,6 +267,34 @@ class SymbolAggregator:
         """Warmup: pre-fill completed minutes (levels are rebuilt by the caller)."""
         for m in minutes:
             self.minutes.append(m)
+            self._ema_update(m.close)
         if minutes:
             self.last_price = minutes[-1].close
             self.last_flow_price = minutes[-1].close
+
+    # ------------------------------------------------------------ minute trend
+
+    _EMA_ALPHA = 2.0 / 21.0  # EMA20
+
+    def _ema_update(self, close: float) -> None:
+        if close <= 0.0:
+            return
+        prev = self._ema20
+        a = self._EMA_ALPHA
+        self._ema20 = close if prev is None else a * close + (1 - a) * prev
+        self._ema20_hist.append(self._ema20)
+
+    def seed_ema(self, closes: list[float]) -> None:
+        """Warmup: fold premarket minute closes into the trend EMA so the
+        slope is defined from the first regular-hours verdicts."""
+        for c in closes:
+            self._ema_update(c)
+
+    def ema_slope_bps(self) -> float | None:
+        """EMA20 slope over the last 3 completed minutes, in bps of price.
+
+        None until enough history exists — callers must treat that as neutral
+        (missing data never fails a signal)."""
+        if len(self._ema20_hist) < 4 or self.last_price <= 0.0:
+            return None
+        return (self._ema20_hist[-1] - self._ema20_hist[0]) / self.last_price * 1e4
