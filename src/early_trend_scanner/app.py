@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ from .ml.labeler import Labeler, LabelResult
 from .ml.online import OnlineModel, make_model
 from .notify.telegram import TelegramNotifier
 from .power import KeepAwake
+from .recap import Recap, RecapRow, build_recap, format_recap
 from .status import StatusWriter, rss_bytes
 from .store.db import SignalStore
 from .store.metrics import MetricsTracker
@@ -47,6 +50,7 @@ class ScannerApp:
         self.status = StatusWriter(cfg.path(cfg.storage.status_path))
         self.store = SignalStore(cfg.path(cfg.storage.db_path), cfg.storage.retention_days)
         self.model = self._load_model()
+        self.efficacy_model = self._load_efficacy_model()
         self.gate = self._load_gate()
         self.notifier = TelegramNotifier(
             token=secrets.telegram_token,
@@ -61,8 +65,6 @@ class ScannerApp:
         self._skew = 0.0  # server-minus-local clock skew, refreshed per session
         # Delivery policy timestamps; armed per session in _run_one_session.
         self._cutoff_ts = float("inf")  # no NEW alerts at/after this time
-        self._recap_ts = float("inf")
-        self._recap_sent = True
 
         # per-session objects, rebuilt each session
         self.engines: dict[str, SymbolEngine] = {}
@@ -94,6 +96,29 @@ class ScannerApp:
                 log.warning("could not load persisted model (%s) — starting fresh", e)
         return make_model(self.cfg.ml.engine)
 
+    def _efficacy_model_path(self) -> Path:
+        d = self.cfg.path(self.cfg.storage.model_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "session_efficacy_model.pkl"
+
+    def _load_efficacy_model(self) -> OnlineModel:
+        path = self._efficacy_model_path()
+        if path.exists():
+            try:
+                model = OnlineModel.from_bytes(path.read_bytes())
+                log.info("loaded session efficacy model %s", model.version)
+                return model
+            except Exception as e:
+                log.warning("could not load session efficacy model (%s) — rebuilding", e)
+
+        model = make_model(self.cfg.ml.engine)
+        rows = self.store.efficacy_training_rows()
+        for features, direction, label in rows:
+            model.learn(features, direction, label)
+        if rows:
+            log.info("rebuilt session efficacy model from %d stored labels", len(rows))
+        return model
+
     def _load_gate(self) -> AdaptiveGate:
         raw = None
         try:
@@ -110,16 +135,32 @@ class ScannerApp:
     def _persist_learning_state(self) -> None:
         try:
             self._model_path().write_bytes(self.model.to_bytes())
+            self._efficacy_model_path().write_bytes(self.efficacy_model.to_bytes())
             self.store.set_meta("adaptive_gate", self.gate.to_json())
             self.store.set_meta("model_version", self.model.version)
-            log.info("persisted model %s and gate v%d", self.model.version, self.gate.version)
+            self.store.set_meta("efficacy_model_version", self.efficacy_model.version)
+            log.info(
+                "persisted models short=%s efficacy=%s and gate v%d",
+                self.model.version,
+                self.efficacy_model.version,
+                self.gate.version,
+            )
         except Exception:
             log.exception("failed to persist learning state")
 
-    def _bg(self, coro: Any) -> None:
-        task = asyncio.ensure_future(coro)
+    def _bg(self, coro: Coroutine[Any, Any, Any]) -> None:
+        task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
-        task.add_done_callback(self._bg_tasks.discard)
+        task.add_done_callback(self._on_bg_done)
+
+    def _on_bg_done(self, task: asyncio.Task[Any]) -> None:
+        self._bg_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            log.exception("background task failed")
 
     # ------------------------------------------------------------------- hooks
 
@@ -141,7 +182,8 @@ class ScannerApp:
             date_str = et_date(sig.alert_ts).isoformat()
             self._bg(asyncio.to_thread(self.store.record_signal, sig, date_str, self.gate.version))
             log.info(
-                "SIGNAL %s %s @%.2f trigger=%.2f inv=%.2f vol=%.1fx score=%.2f p=%s%s",
+                "SIGNAL %s %s @%.2f trigger=%.2f inv=%.2f vol=%.1fx "
+                "score=%.2f p=%s efficacy_p=%s%s",
                 sig.dir_str,
                 sig.symbol,
                 sig.alert_price,
@@ -150,6 +192,7 @@ class ScannerApp:
                 sig.vol_ratio,
                 sig.score,
                 f"{sig.prob:.2f}" if sig.prob is not None else "-",
+                f"{sig.efficacy_prob:.2f}" if sig.efficacy_prob is not None else "-",
                 " [suppressed]" if sig.suppressed else "",
             )
 
@@ -164,6 +207,15 @@ class ScannerApp:
                 log.exception("model predict failed")
                 return None, self.model.version
 
+        def efficacy_predict(
+            features: dict[str, float], direction: int
+        ) -> tuple[float | None, str]:
+            try:
+                return self.efficacy_model.predict(features, direction), self.efficacy_model.version
+            except Exception:
+                log.exception("session efficacy model predict failed")
+                return None, self.efficacy_model.version
+
         return MachineHooks(
             emit=emit,
             ml_predict=ml_predict,
@@ -171,6 +223,11 @@ class ScannerApp:
             ml_gate_active=lambda: self.gate.active and self.model.ready(self.cfg.ml.min_labels),
             prob_gate_min=self.cfg.ml.prob_gate_min,
             prob_bypass_score=self.cfg.ml.prob_bypass_score,
+            efficacy_predict=efficacy_predict,
+            efficacy_gate_active=lambda: self.efficacy_model.ready(
+                self.cfg.ml.efficacy_min_labels
+            ),
+            efficacy_prob_gate_min=self.cfg.ml.efficacy_prob_gate_min,
             on_signal_fired=on_signal_fired,
             on_signal_final=on_signal_final,
         )
@@ -297,8 +354,6 @@ class ScannerApp:
 
         self.session = session
         self._cutoff_ts = session.close_ts - self.cfg.session.quiet_last_min * 60
-        self._recap_ts = session.close_ts - self.cfg.session.recap_min_before_close * 60
-        self._recap_sent = False
         log.info(
             "session %s: open in %.1f min, close in %.1f min (quiet from %.0f min before close)",
             session.date_str,
@@ -363,7 +418,7 @@ class ScannerApp:
             key=self.secrets.alpaca_key,
             secret=self.secrets.alpaca_secret,
             feed=self.cfg.data.feed,
-            symbols=self.cfg.symbols + list(self.cfg.data.context_symbols),
+            symbols=list(dict.fromkeys(self.cfg.symbols + list(self.cfg.data.context_symbols))),
             quote_symbols=self.cfg.symbols,
             trade_queue=trade_q,
             quote_queue=quote_q,
@@ -444,9 +499,20 @@ class ScannerApp:
             rings = {sym: e.agg.ring for sym, e in self.engines.items()}
             resolved = self.labeler.flush(rings)
             log.info("labeler flush: %d pending resolved at close", resolved)
+        if self._bg_tasks:
+            await asyncio.gather(*list(self._bg_tasks), return_exceptions=True)
 
         summary = self.metrics.summary()
         date_str = self.session.date_str if self.session else "unknown"
+        recap = self._finalize_session_efficacy()
+        if recap is not None:
+            summary["efficacy"] = {
+                "definition": "confirmed_to_session_close",
+                "confirmed": recap.confirmed,
+                "favorable": recap.favorable,
+                "rate": round(recap.efficacy, 3) if recap.efficacy is not None else None,
+                "avg_move_bps": round(recap.avg_move_bps, 1),
+            }
         try:
             await asyncio.to_thread(self.store.record_daily_metrics, date_str, "_ALL", summary)
             for sym, eng in self.engines.items():
@@ -483,8 +549,10 @@ class ScannerApp:
                     eng.on_trade(ft)
                 except Exception:
                     log.exception("engine error on trade %s", ft.symbol)
-            else:
-                self.context.on_trade(ft)
+            # A symbol may be both scanned and a regime proxy (SPY). The
+            # context tracker ignores non-context symbols, so one filtered
+            # trade can safely feed both roles without duplicate subscriptions.
+            self.context.on_trade(ft)
 
     async def _quote_consumer(self, q: asyncio.Queue[Quote]) -> None:
         while True:
@@ -508,46 +576,69 @@ class ScannerApp:
             if self.labeler is not None:
                 rings = {sym: e.agg.ring for sym, e in self.engines.items()}
                 self.labeler.on_tick(now, rings)
-            self._maybe_recap(now)
 
     def _minute_close_at(self, symbol: str, ts: float) -> float | None:
         """1-minute close at or just before ts, from the engine's minute deque."""
         eng = self.engines.get(symbol)
         if eng is None:
             return None
+        if self.session is not None and ts >= self.session.close_ts - 1:
+            return eng.agg.last_price or None
         for m in reversed(eng.agg.minutes):
             if m.ts + 60 <= ts + 1:
                 return m.close
         return None
 
-    def _maybe_recap(self, now: float) -> None:
-        if self._recap_sent or self.session is None or now < self._recap_ts:
-            return
-        self._recap_sent = True
+    def _finalize_session_efficacy(self) -> Recap | None:
+        """Evaluate and learn the exact confirmation-to-close target once."""
+        if self.session is None:
+            return None
+        now = time.time() + self._skew
+        if now < self.session.close_ts - 5:
+            log.warning("session ended before the close; efficacy labels deferred")
+            return None
         try:
-            from .recap import RecapRow, build_recap, format_recap
-
             date_str = self.session.date_str
+            stored_rows = self.store.confirmed_for_efficacy(date_str, self._cutoff_ts)
             rows = [
                 RecapRow(
-                    symbol=r[0],
-                    direction=int(r[1]),
-                    alert_ts=float(r[2]),
-                    alert_price=float(r[3]),
-                    resolution_ts=float(r[4]),
+                    symbol=str(r["symbol"]),
+                    direction=int(r["direction"]),
+                    alert_ts=float(r["ts"]),
+                    alert_price=float(r["alert_price"]),
+                    resolution_ts=float(r["resolution_ts"]),
+                    signal_id=str(r["signal_id"]),
+                    resolution_price=(
+                        float(r["resolution_price"]) if r["resolution_price"] else None
+                    ),
                 )
-                for r in self.store.confirmed_before(date_str, self._cutoff_ts)
+                for r in stored_rows
             ]
-            recap = build_recap(rows, self._minute_close_at, self._cutoff_ts)
+            recap = build_recap(rows, self._minute_close_at, self.session.close_ts)
+            by_id = {str(r["signal_id"]): r for r in stored_rows}
+            for outcome in recap.outcomes:
+                stored = by_id[outcome.signal_id]
+                if stored["efficacy_label"] is None:
+                    self.store.record_efficacy(
+                        outcome.signal_id,
+                        outcome.favorable,
+                        outcome.move_bps,
+                        outcome.entry_price,
+                    )
+                    features = stored["features"]
+                    if features:
+                        self.efficacy_model.learn(features, outcome.direction, outcome.favorable)
             msg = format_recap(date_str, recap)
             self.notifier.publish_ops(msg, key=f"recap:{date_str}")
             self.store.set_meta(
                 f"efficacy:{date_str}",
                 f"{recap.favorable}/{recap.confirmed} avg={recap.avg_move_bps:+.1f}bps",
             )
-            log.info("RECAP sent: %s", msg)
+            log.info("session-close efficacy finalized: %s", msg)
+            return recap
         except Exception:
-            log.exception("daily recap failed")
+            log.exception("session-close efficacy failed")
+            return None
 
     async def _status_loop(self) -> None:
         while True:
@@ -619,7 +710,9 @@ class ScannerApp:
             eng.catchup = True
         self._consumers_running.clear()
         try:
-            all_syms = self.cfg.symbols + list(self.cfg.data.context_symbols)
+            all_syms = list(
+                dict.fromkeys(self.cfg.symbols + list(self.cfg.data.context_symbols))
+            )
             trades = await rest.trades(all_syms, gap_start, now, self.cfg.data.feed)
             merged: list[Trade] = []
             for rows in trades.values():
@@ -632,8 +725,7 @@ class ScannerApp:
                 target = self.engines.get(ft.symbol)
                 if target is not None:
                     target.on_trade(ft)
-                else:
-                    self.context.on_trade(ft)
+                self.context.on_trade(ft)
             log.info("backfill complete: %d trades", len(merged))
         except Exception:
             log.exception("gap recovery failed — continuing with live data only")
@@ -648,13 +740,20 @@ class ScannerApp:
         s = self.stream
         alerts = sum(e.machine.alerts_today for e in self.engines.values())
         suppressed = sum(e.machine.suppressed_today for e in self.engines.values())
+        last_rx_age = max(0.0, time.monotonic() - s.last_rx_mono) if s else None
         return {
             "state": "scanning",
             "version": __version__,
+            "process_id": os.getpid(),
+            "project_root": str(self.cfg.root.resolve()),
             "session": self.session.date_str if self.session else None,
+            "symbols": list(self.cfg.symbols),
+            "context_symbols": list(self.cfg.data.context_symbols),
             "feed": self.cfg.data.feed,
             "demo_mode": self.cfg.data.demo_mode,
             "ws_connected": bool(s and s.connected),
+            "alerts_enabled": self._alerts_enabled(),
+            "last_rx_age_s": round(last_rx_age, 3) if last_rx_age is not None else None,
             "feed_latency_s": round(s.latency_ewma_s, 3) if s else None,
             "dropped_trades": s.dropped_trades if s else 0,
             "dropped_quotes": s.dropped_quotes if s else 0,
@@ -662,6 +761,10 @@ class ScannerApp:
             "suppressed_today": suppressed,
             "labels_pending": self.labeler.pending_count if self.labeler else 0,
             "model_version": self.model.version,
+            "efficacy_model_version": self.efficacy_model.version,
+            "efficacy_gate_active": self.efficacy_model.ready(
+                self.cfg.ml.efficacy_min_labels
+            ),
             "gate_active": self.gate.active,
             "gate_version": self.gate.version,
             "keepawake": self.keepawake.active,

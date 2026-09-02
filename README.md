@@ -1,7 +1,7 @@
 # early_trend_scanner
 
-Detects the earliest usable sign that one of 14 liquid US stocks (TSLA, NVDA,
-AAPL, PLTR, AMD, AMZN, META, MSFT, GOOGL, INTC, MU, AVGO, MSTR, HOOD) is
+Detects the earliest usable sign that one of 13 liquid US stocks and ETFs
+(TSLA, NVDA, AAPL, QQQ, SPY, PLTR, AMD, AMZN, GOOGL, INTC, AVGO, MSTR, HOOD) is
 beginning a potentially substantial 1–5 minute expansion — **up or down,
 symmetrically** — and immediately sends a short Telegram signal.
 
@@ -24,8 +24,8 @@ per-symbol state machine:  SCANNING → READY → EARLY_SIGNAL → CONFIRMED/FAI
         │  acceleration and directional flow — never waits for a candle close
         ▼
 Telegram (priority queue, retries, dedupe)  +  SQLite record
-        ▼
-outcome window (5 min) → label → River online model + bounded adaptive gate
+        ├─ 5m expansion outcome → River model + bounded adaptive gate
+        └─ CONFIRMED price → session close outcome → efficacy model (≥40 labels to gate)
 ```
 
 **Price trigger**: break/cross of a recent range, swing pivot, VWAP,
@@ -34,7 +34,8 @@ accelerating directional velocity (1s/5s/15s windows).
 
 **Volume trigger**: 5-second volume vs the prior 60 seconds AND vs the
 same-minute-of-day baseline built from ≥5 completed sessions; signed
-(ask-initiated vs bid-initiated) imbalance must point the same way.
+(ask-initiated vs bid-initiated) imbalance must point the same way over 5
+seconds and retain aligned participation over 15 seconds for micro-breaks.
 
 **Persistence**: several qualifying prints across ≥ ~1 s — one anomalous print
 never alerts. Alerts are rejected when volume doesn't accelerate, when price is
@@ -51,6 +52,14 @@ staleness; when the penalty is what sinks a candidate, it is counted as a
 `fake_start` rejection. The trained model's probability then gates the
 survivors (`ml.prob_gate_min`), suppressing low-conviction alerts while still
 tracking and labeling them so learning continues.
+
+**Session efficacy layer**: the north-star metric is the share of delivered,
+CONFIRMED signals whose price moves in the signaled direction from the
+confirmation price to the official session close. A separate River model
+learns that exact label and may gate below `ml.efficacy_prob_gate_min` only
+after `ml.efficacy_min_labels` outcomes; this avoids pretending one session is
+enough training data. Raw trigger scores above `ml.prob_bypass_score` retain
+the existing exceptional-evidence bypass.
 
 **Learning**: each signal stores its compact feature vector at alert time; the
 outcome window labels it (positive = reached ≥1.5× the invalidation distance
@@ -78,7 +87,7 @@ rolling precision deteriorates vs the frozen rule-only baseline.
 winget install --id Python.Python.3.12 --scope user
 
 # 1) from the project folder:
-cd $env:USERPROFILE\.claude\early_trend_scanner
+cd $env:USERPROFILE\Documents\early_trend_scanner
 .\setup.ps1               # creates .venv, installs pinned deps, creates .env
 
 # 2) put your keys in .env  (never committed; do not share)
@@ -142,13 +151,14 @@ Real-date replay pulls historical SIP trades+quotes over REST, feeds them
 through the *identical* live pipeline in timestamp order, and prints precision,
 false-alert rate, median lead time, median share-of-move-remaining, confirm
 rate and per-symbol/direction slices. Keep windows modest — full-day tick data
-for 14 symbols is heavy over REST.
+for the full universe is heavy over REST.
 
 ## Operations
 
 - **Task Scheduler**: `install_task.ps1` registers *EarlyTrendScanner*
   (Mon–Fri, ~09:20 ET local equivalent, "Wake the computer to run this task"
-  enabled, runs on battery). The app itself decides everything from the Alpaca
+  enabled, runs on battery, and retries unexpected failures up to three times
+  at one-minute intervals). The app itself decides everything from the Alpaca
   clock/calendar: holidays and early closes are respected, DST is handled in
   `America/New_York`, and on non-trading days it exits immediately.
   Re-run `install_task.ps1` after a DST switch for exact timing (the app
@@ -158,8 +168,9 @@ for 14 symbols is heavy over REST.
   won't idle-sleep, but deliberate sleep/shutdown/lid actions still work.
   The flag is released at the close (verify with `run.ps1 power-selftest`).
 - **At the close**: streams unsubscribe, pending outcomes are labeled, the
-  model + adaptive gate + daily metrics are persisted, the sleep flag is
-  released, and the process exits (`session.after_close: pause` keeps a
+  confirmation-to-close efficacy outcomes are evaluated, the recap is sent,
+  both models + adaptive gate + daily metrics are persisted, the sleep flag
+  is released, and the process exits (`session.after_close: pause` keeps a
   zero-work idle process instead).
 - **Resilience**: automatic WS reconnect with exponential backoff + jitter,
   silence watchdog (5 s), REST backfill of trade gaps > 2 s (alerts suppressed
@@ -168,7 +179,7 @@ for 14 symbols is heavy over REST.
   monitoring (alerts pause when the feed lags > 3 s), model checkpoint every
   15 min.
 - **Memory**: raw ticks are never retained; per symbol only a 600-second ring
-  of 1-second aggregates, ≤120 one-minute bars, a 64-print flow window and a
+  of 1-second aggregates, ≤420 one-minute bars, a 64-print flow window and a
   handful of levels. SQLite holds compact signal rows with a 90-day retention.
   Live RSS is reported in `status.json` / `healthcheck.ps1`.
 

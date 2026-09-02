@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from early_trend_scanner.recap import Recap, RecapRow, build_recap, format_recap
 
 T0 = 1_756_000_000.0
@@ -22,29 +26,31 @@ def price_at(sym: str, ts: float) -> float | None:
 
 
 def test_build_recap_math() -> None:
-    r = build_recap(rows3(), price_at, cutoff_ts=T0 + 1800)
+    r = build_recap(rows3(), price_at, close_ts=T0 + 1800)
     assert r.confirmed == 3 and r.favorable == 1
     assert r.efficacy is not None and abs(r.efficacy - 1 / 3) < 1e-9
     # moves: +100, -100, -50 bps -> avg ~ -16.7
     assert abs(r.avg_move_bps + 16.7) < 1.0
+    assert [o.favorable for o in r.outcomes] == [True, False, False]
 
 
 def test_missing_price_falls_back_or_skips() -> None:
     def sparse(sym: str, ts: float) -> float | None:
         return None if sym == "AAA" else price_at(sym, ts)
 
-    r = build_recap(rows3(), sparse, cutoff_ts=T0 + 1800)
+    r = build_recap(rows3(), sparse, close_ts=T0 + 1800)
     assert r.confirmed == 2  # AAA skipped: no final price at cutoff
 
 
 def test_format_is_short() -> None:
     msg = format_recap("2026-08-31", Recap(confirmed=5, favorable=3, avg_move_bps=23.4))
-    assert "60%" in msg and len(msg.split()) < 40
+    assert "60%" in msg and "confirmation-to-close" in msg and len(msg.split()) < 40
     empty = format_recap("2026-08-31", Recap(0, 0, 0.0))
     assert "no confirmed" in empty
 
 
-def test_quiet_hour_blocks_new_alert_delivery(cfg) -> None:
+@pytest.mark.asyncio
+async def test_quiet_hour_blocks_new_alert_delivery(cfg) -> None:
     from early_trend_scanner.app import ScannerApp
     from early_trend_scanner.config import Secrets
     from early_trend_scanner.engine.state import Signal
@@ -76,5 +82,6 @@ def test_quiet_hour_blocks_new_alert_delivery(cfg) -> None:
     s = sig(T0 + 500.0)
     s.resolution_ts = T0 + 1600.0
     hooks.emit(s, "CONFIRMED", {"reason": "volume sustained", "env": ""})
+    await asyncio.gather(*app._bg_tasks)
     assert any("CONFIRMED" in m for m in app.notifier.captured)
     app.store.close()

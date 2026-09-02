@@ -160,8 +160,7 @@ class ReplayRunner:
                     eng = self.engines.get(ft.symbol)
                     if eng is not None:
                         eng.on_trade(ft)
-                    else:
-                        self.context.on_trade(ft)
+                    self.context.on_trade(ft)
             else:
                 eng = self.engines.get(ev.symbol)
                 if eng is not None:

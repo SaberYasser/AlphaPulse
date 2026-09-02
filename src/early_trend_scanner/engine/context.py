@@ -5,8 +5,9 @@ market's direction stall even when confirmed, and rising volatility steers
 everything. The tape of one or two context symbols — a market proxy (SPY)
 and a fear proxy (VXX, since the VIX index itself is not on the equities
 feed) — is aggregated with the same 1-second machinery as scan symbols, and
-each Snapshot gets direction-aligned regime velocities. They are features
-for the score/model layer, never hard gates: all of them read 0.0 (neutral)
+each Snapshot gets direction-aligned regime velocities. A proxy may also be
+scanned; one filtered trade feeds both roles. Context values are features for
+the score/model layer, never hard gates: all of them read 0.0 (neutral)
 when context data is absent or stale, so replays, tests and outages degrade
 gracefully.
 """

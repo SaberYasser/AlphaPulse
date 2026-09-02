@@ -273,6 +273,16 @@ def test_penalty_math() -> None:
     assert fake_start_penalty(_passing_snap(vol_ratio_prev=2.5), 1.0, 0.55, 6.0, 0.30) == 0.0
 
 
+def test_15s_imbalance_rejects_one_window_burst(harness: Harness) -> None:
+    from early_trend_scanner.engine.state import Rejection, Signal
+
+    weak = harness.engine.machine.consider(_passing_snap(imb15=0.05), 0.55)
+    assert isinstance(weak, Rejection) and weak.reason == "imbalance_15s"
+
+    strong = harness.engine.machine.consider(_passing_snap(imb15=0.10), 0.55)
+    assert isinstance(strong, Signal)
+
+
 def test_penalty_rejects_marginal_uncompressed_break(harness: Harness) -> None:
     from early_trend_scanner.engine.state import Rejection
 
@@ -436,6 +446,19 @@ def test_strong_score_bypasses_model_suppression(harness: Harness) -> None:
     assert sig2.suppressed  # ordinary signals still gated
 
 
+def test_session_efficacy_model_can_suppress_when_ready(harness: Harness) -> None:
+    from early_trend_scanner.engine.state import Signal
+
+    machine = harness.engine.machine
+    machine.hooks.efficacy_predict = lambda f, d: (0.45, "eff-test")
+    machine.hooks.efficacy_gate_active = lambda: True
+    machine.hooks.efficacy_prob_gate_min = 0.60
+    machine.hooks.prob_bypass_score = 0.80
+    sig = machine.consider(_passing_snap(score=0.75), 0.55)
+    assert isinstance(sig, Signal) and sig.suppressed
+    assert sig.efficacy_prob == 0.45
+
+
 # ------------------------------------------------- sustained-pressure detector
 
 
@@ -556,7 +579,11 @@ def test_verdict_demoted_when_minute_trend_against(harness: Harness) -> None:
     inv_dist = abs(sig.trigger_price - sig.invalidation)
     progressed = sig.trigger_price + 0.6 * inv_dist
     m.observe(
-        sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0,
+        sig.alert_ts + 61.0,
+        progressed,
+        imb5=0.5,
+        share_up5=0.8,
+        vol5=1000.0,
         minute_slope_bps=-2.0,
     )
     assert sig.resolution == "FAILED"
@@ -570,7 +597,11 @@ def test_verdict_confirms_with_minute_trend_aligned(harness: Harness) -> None:
     inv_dist = abs(sig.trigger_price - sig.invalidation)
     progressed = sig.trigger_price + 0.6 * inv_dist
     m.observe(
-        sig.alert_ts + 61.0, progressed, imb5=0.5, share_up5=0.8, vol5=1000.0,
+        sig.alert_ts + 61.0,
+        progressed,
+        imb5=0.5,
+        share_up5=0.8,
+        vol5=1000.0,
         minute_slope_bps=2.0,
     )
     assert sig.resolution == "CONFIRMED"
@@ -607,7 +638,11 @@ def test_verdict_slope_symmetric_for_down_signals(harness: Harness) -> None:
     progressed = sig.trigger_price - 0.6 * inv_dist
     # rising minute trend argues against a short: demoted
     m.observe(
-        sig.alert_ts + 61.0, progressed, imb5=-0.5, share_up5=0.2, vol5=1000.0,
+        sig.alert_ts + 61.0,
+        progressed,
+        imb5=-0.5,
+        share_up5=0.2,
+        vol5=1000.0,
         minute_slope_bps=2.0,
     )
     assert sig.resolution == "FAILED"

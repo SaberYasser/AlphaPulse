@@ -44,6 +44,8 @@ class Signal:
     features: dict[str, float]
     prob: float | None = None
     model_version: str = ""
+    efficacy_prob: float | None = None
+    efficacy_model_version: str = ""
     score: float = 0.0
     vol5: float = 0.0  # absolute 5-second volume (shares) at trigger
     suppressed: bool = False  # ML-gated: tracked/learned but not alerted
@@ -52,6 +54,7 @@ class Signal:
     followups_sent: int = 0
     resolution: str = ""  # CONFIRMED | FAILED
     resolution_ts: float = 0.0
+    resolution_price: float = 0.0
     resolution_reason: str = ""
 
     @property
@@ -105,6 +108,11 @@ class MachineHooks:
     ml_gate_active: Callable[[], bool]
     prob_gate_min: float
     prob_bypass_score: float = 1.01  # score at/above this is never model-suppressed
+    efficacy_predict: Callable[[dict[str, float], int], tuple[float | None, str]] = field(
+        default=lambda f, d: (None, "")
+    )
+    efficacy_gate_active: Callable[[], bool] = field(default=lambda: False)
+    efficacy_prob_gate_min: float = 0.60
     on_signal_fired: Callable[[Signal], None] = field(default=lambda s: None)
     on_signal_final: Callable[[Signal], None] = field(default=lambda s: None)
 
@@ -192,6 +200,8 @@ class StateMachine:
             return self._reject("volume_baseline", snap)
         if snap.imb5 * snap.direction < cfg.imb_min:
             return self._reject("imbalance", snap)
+        if snap.imb15 * snap.direction < cfg.imb15_min:
+            return self._reject("imbalance_15s", snap)
 
         # --- persistence: more than an isolated print ---------------------
         if snap.n2s < cfg.min_trades_2s:
@@ -274,14 +284,14 @@ class StateMachine:
             return None
         if not self.limiter.allow(ts):
             return self._reject("global_hour_cap", snap)
-        out = self._fire(snap, allow_suppress=cfg.trend_model_gated)
+        out = self._fire(snap, allow_short_suppress=cfg.trend_model_gated)
         if isinstance(out, Signal):
             self.trend_alerts_today += 1
         return out
 
     # ----------------------------------------------------------------- firing
 
-    def _fire(self, snap: Snapshot, allow_suppress: bool = True) -> Signal | Rejection:
+    def _fire(self, snap: Snapshot, allow_short_suppress: bool = True) -> Signal | Rejection:
         cfg = self.cfg
         # Opening phase: the 5m-range estimate is degenerate (no completed
         # minutes) while realized whip is at its daily maximum — floor the
@@ -300,8 +310,11 @@ class StateMachine:
 
         features = snap.to_features()
         prob, model_version = self.hooks.ml_predict(features, snap.direction)
-        suppressed = (
-            allow_suppress
+        efficacy_prob, efficacy_model_version = self.hooks.efficacy_predict(
+            features, snap.direction
+        )
+        short_suppressed = (
+            allow_short_suppress
             and self.hooks.ml_gate_active()
             and prob is not None
             and prob < self.hooks.prob_gate_min
@@ -310,6 +323,13 @@ class StateMachine:
             # price+volume signals.
             and snap.score < self.hooks.prob_bypass_score
         )
+        efficacy_suppressed = (
+            self.hooks.efficacy_gate_active()
+            and efficacy_prob is not None
+            and efficacy_prob < self.hooks.efficacy_prob_gate_min
+            and snap.score < self.hooks.prob_bypass_score
+        )
+        suppressed = short_suppressed or efficacy_suppressed
 
         sig = Signal(
             signal_id=f"{self.symbol}-{int(snap.ts * 1000)}-{'U' if snap.direction > 0 else 'D'}",
@@ -325,6 +345,8 @@ class StateMachine:
             features=features,
             prob=prob,
             model_version=model_version,
+            efficacy_prob=efficacy_prob,
+            efficacy_model_version=efficacy_model_version,
             score=snap.score,
             vol5=snap.vol5,
             suppressed=suppressed,
@@ -340,7 +362,12 @@ class StateMachine:
             self.last_alert_ts = snap.ts
             self.last_trigger_price = snap.level_price
             self.last_direction = snap.direction
-            log.info("suppressed by model gate p=%.2f %s", prob or -1.0, sig.signal_id)
+            log.info(
+                "suppressed by model gate p=%s efficacy_p=%s %s",
+                f"{prob:.2f}" if prob is not None else "-",
+                f"{efficacy_prob:.2f}" if efficacy_prob is not None else "-",
+                sig.signal_id,
+            )
             self.hooks.on_signal_fired(sig)
             return sig
 
@@ -400,7 +427,7 @@ class StateMachine:
 
         # Hard invalidation: through the invalidation price.
         if (price - sig.invalidation) * d < 0:
-            self._resolve(sig, ts, "FAILED", "hit invalidation")
+            self._resolve(sig, ts, price, "FAILED", "hit invalidation")
             return
 
         # Trigger recross + directional flow gone. Suspended during the opening
@@ -414,7 +441,7 @@ class StateMachine:
             ) * d < -cfg.fail_buffer_bps / 1e4 * sig.trigger_price
             flow_dead = imb5 * d <= 0.0 or dir_share5 < 0.40
             if recross and flow_dead:
-                self._resolve(sig, ts, "FAILED", "directional volume reversed")
+                self._resolve(sig, ts, price, "FAILED", "directional volume reversed")
                 return
 
         # Confirmation requires real expansion progress, not mere survival:
@@ -443,25 +470,25 @@ class StateMachine:
             flow_ok = dir_share5 >= 0.5 or imb5 * d > 0
             if beyond and progress_r >= cfg.confirm_min_r and flow_ok and vol5 > 0:
                 if slope_ok:
-                    self._resolve(sig, ts, "CONFIRMED", "volume sustained")
+                    self._resolve(sig, ts, price, "CONFIRMED", "volume sustained")
                 else:
-                    self._resolve(sig, ts, "FAILED", "minute trend against")
+                    self._resolve(sig, ts, price, "FAILED", "minute trend against")
                 return
         if elapsed >= cfg.observe_max_s:
             beyond = (price - sig.trigger_price) * d > 0
             if beyond and progress_r >= cfg.confirm_min_r:
                 if slope_ok:
-                    self._resolve(sig, ts, "CONFIRMED", "held at deadline")
+                    self._resolve(sig, ts, price, "CONFIRMED", "held at deadline")
                 else:
-                    self._resolve(sig, ts, "FAILED", "minute trend against")
+                    self._resolve(sig, ts, price, "FAILED", "minute trend against")
             elif beyond and progress_r >= 0.7 * cfg.confirm_min_r and env_support and slope_ok:
                 # Marginal progress + supportive environment: the tiebreaker
                 # confirms rather than fails (bounded to near-misses only).
-                self._resolve(sig, ts, "CONFIRMED", "progress with tailwind")
+                self._resolve(sig, ts, price, "CONFIRMED", "progress with tailwind")
             elif beyond and progress_r >= cfg.confirm_min_r * 0.9 and env_against:
-                self._resolve(sig, ts, "FAILED", "environment against")
+                self._resolve(sig, ts, price, "FAILED", "environment against")
             else:
-                self._resolve(sig, ts, "FAILED", "no expansion progress")
+                self._resolve(sig, ts, price, "FAILED", "no expansion progress")
 
     _last_env: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
@@ -484,9 +511,10 @@ class StateMachine:
             parts.append("event tape")
         return ", ".join(parts)
 
-    def _resolve(self, sig: Signal, ts: float, state: str, reason: str) -> None:
+    def _resolve(self, sig: Signal, ts: float, price: float, state: str, reason: str) -> None:
         sig.resolution = state
         sig.resolution_ts = ts
+        sig.resolution_price = price
         sig.resolution_reason = reason
         # Hard cap: EARLY + at most 2 follow-ups per setup (we send exactly 1).
         if not sig.suppressed and sig.followups_sent < 2:

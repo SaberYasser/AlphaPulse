@@ -1,7 +1,7 @@
 # early_trend_scanner configuration.
 # Secrets (API keys, Telegram token/chat id) come from .env — never from this file.
 
-symbols: [TSLA, NVDA, AAPL, PLTR, AMD, AMZN, META, MSFT, GOOGL, INTC, MU, AVGO, MSTR, HOOD]
+symbols: [TSLA, NVDA, AAPL, QQQ, SPY, PLTR, AMD, AMZN, GOOGL, INTC, AVGO, MSTR, HOOD]
 
 data:
   # "sip" = consolidated feed (requires Alpaca Algo Trader Plus / paid data plan).
@@ -29,9 +29,10 @@ data:
   max_feed_latency_s: 3.0       # suppress new alerts when feed latency exceeds this
   queue_trades: 20000           # bounded asyncio queues (events, not bytes)
   queue_quotes: 10000
-  # Regime context tape: [market proxy, volatility/fear proxy]. Streamed and
-  # aggregated (never scanned); their velocities become model features so the
-  # learner can weigh with-market vs against-market signals and rising fear.
+  # Regime context tape: [market proxy, volatility/fear proxy]. Their velocities
+  # become model features; a proxy may also be scanned using the same trade stream.
+  # SPY is intentionally both a scanned symbol and the market-regime proxy;
+  # its trade stream is shared without duplicate subscriptions or aggregation.
   context_symbols: [SPY, VXX]
 
 session:
@@ -40,11 +41,10 @@ session:
   opening_range_min: 5          # opening-range window in minutes
   quiet_last_min: 60            # no NEW alerts in the last hour (no fresh positions there);
                                 # signals still fire in shadow and keep training the model
-  recap_min_before_close: 30    # one daily efficacy recap message (15:30 on normal days)
 
 engine:
   ring_seconds: 600             # 1-second aggregates kept per symbol (>= outcome window)
-  minutes_kept: 120             # completed 1-minute bars kept per symbol
+  minutes_kept: 420             # retain the full session for confirmation-to-close efficacy
   ready_bps: 8.0                # price within this of a level -> READY
   break_min_bps: 3.0            # must clear the level by at least this
   break_max_bps: 20.0           # reject alert if already extended beyond this past the level
@@ -60,6 +60,8 @@ engine:
                                 # baseline's first minute contains the auction print, so
                                 # no live burst can look "2x normal" against it
   imb_min: 0.30                 # signed-volume imbalance in trigger direction (5s)
+  imb15_min: 0.10               # regular micro-breaks need persistent 15s directional tape;
+                                # deliberately not applied to sustained-trend signals
   persist_min_trades: 4         # directional trades required inside persist window
   persist_window_s: 2.5
   persist_min_span_s: 0.6       # first->last qualifying trade span (rejects one print)
@@ -125,6 +127,8 @@ ml:
   prob_bypass_score: 0.80       # raw trigger score at/above this always delivers: market
                                 # context (SPY/VIX) informs the model but must never veto
                                 # exceptional price+volume evidence
+  efficacy_min_labels: 40       # exact confirmation-to-close outcomes before this model gates
+  efficacy_prob_gate_min: 0.60  # then require >=60% estimated session-direction persistence
   outcome_window_s: 300         # 1..5 minute outcome; label decided at this horizon
   pos_multiple: 1.5             # MFE must reach 1.5x invalidation distance before invalidation
   min_remaining_frac: 0.50      # portion of trigger->peak move still ahead at alert time

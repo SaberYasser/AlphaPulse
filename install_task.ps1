@@ -34,6 +34,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Hours 10)
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
@@ -43,6 +45,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
 Write-Host "Task '$TaskName' registered:" -ForegroundColor Green
 Write-Host "  runs Mon-Fri at $($triggerLocal.ToString('HH:mm')) local (~$EtHour`:$($EtMinute.ToString('00')) ET)"
 Write-Host '  "Wake the computer to run this task" is ENABLED'
+Write-Host '  unexpected failures restart up to 3 times at 1-minute intervals'
 Write-Host '  the app exits on non-trading days after checking the Alpaca calendar'
 Write-Host ''
 Write-Host 'Verify with:  Get-ScheduledTask -TaskName EarlyTrendScanner | Get-ScheduledTaskInfo'

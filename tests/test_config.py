@@ -14,8 +14,9 @@ def write(tmp_path: Path, text: str) -> Path:
 def test_defaults_without_file(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "missing.yaml", root=tmp_path)
     assert cfg.data.feed == "sip"
-    assert len(cfg.symbols) == 14
-    assert "TSLA" in cfg.symbols and "HOOD" in cfg.symbols
+    assert len(cfg.symbols) == 13
+    assert {"TSLA", "QQQ", "SPY", "HOOD"} <= set(cfg.symbols)
+    assert {"MU", "MSFT", "META"}.isdisjoint(cfg.symbols)
 
 
 def test_load_real_project_config() -> None:
@@ -49,6 +50,20 @@ def test_outcome_window_bounds(tmp_path: Path) -> None:
 def test_symbols_uppercased(tmp_path: Path) -> None:
     cfg = load_config(write(tmp_path, "symbols: [tsla, nvda]\n"), root=tmp_path)
     assert cfg.symbols == ["TSLA", "NVDA"]
+
+
+def test_scan_symbol_can_also_be_context_proxy(tmp_path: Path) -> None:
+    cfg = load_config(
+        write(
+            tmp_path,
+            "symbols: [spy, qqq]\n"
+            "data:\n"
+            "  context_symbols: [SPY, VXX]\n",
+        ),
+        root=tmp_path,
+    )
+    assert cfg.symbols == ["SPY", "QQQ"]
+    assert cfg.data.context_symbols == ["SPY", "VXX"]
 
 
 def test_secrets_never_repr(monkeypatch) -> None:

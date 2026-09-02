@@ -71,12 +71,14 @@ async def replay_real(
         await clock.load_sessions(back_days=40, fwd_days=1)
 
         # Regime-context tape (SPY/VXX): fetched once, merged into every stream.
-        ctx_streams: list[list[Trade]] = []
+        ctx_streams: dict[str, list[Trade]] = {}
         ctx_syms = list(cfg.data.context_symbols)
         if ctx_syms:
             log.info("fetching context tape %s", ctx_syms)
             ctx_raw = await rest.trades(ctx_syms, t0, t1, cfg.data.feed, max_pages=200)
-            ctx_streams = [sorted(ctx_raw.get(c, []), key=lambda e: e.ts) for c in ctx_syms]
+            ctx_streams = {
+                c: sorted(ctx_raw.get(c, []), key=lambda e: e.ts) for c in ctx_syms
+            }
 
         if not per_symbol:
             runner = ReplayRunner(cfg, session, symbols, baseline=MinuteBaseline())
@@ -126,7 +128,7 @@ async def _fetch_events(
     t0: float,
     t1: float,
     with_quotes: bool,
-    ctx_streams: list[list[Trade]] | None = None,
+    ctx_streams: dict[str, list[Trade]] | None = None,
 ) -> Iterable[Trade | Quote]:
     trades = await rest.trades(symbols, t0, t1, cfg.data.feed, max_pages=_TRADE_PAGES_FULL_DAY)
     quotes_raw = (
@@ -159,6 +161,8 @@ async def _fetch_events(
         streams.append(sorted(trades.get(sym, []), key=lambda e: e.ts))
         if with_quotes:
             streams.append(quote_stream(sym))
-    for cs in ctx_streams or []:
-        streams.append(cs)
+    scanned = set(symbols)
+    for context_symbol, context_events in (ctx_streams or {}).items():
+        if context_symbol not in scanned:
+            streams.append(context_events)
     return heapq.merge(*streams, key=lambda e: e.ts)

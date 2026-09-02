@@ -31,6 +31,7 @@ def test_signal_lifecycle_roundtrip(tmp_path: Path) -> None:
     store.record_signal(s, "2026-08-28", gate_version=1)
     s.resolution = "CONFIRMED"
     s.resolution_ts = s.alert_ts + 20
+    s.resolution_price = 100.25
     s.resolution_reason = "volume sustained"
     store.record_resolution(s)
     store.record_label(
@@ -52,6 +53,13 @@ def test_signal_lifecycle_roundtrip(tmp_path: Path) -> None:
     assert row["label"] == 1
     assert row["lead_time_s"] == 18.0
     assert row["prob"] == 0.61
+    store.record_efficacy(s.signal_id, True, 37.5)
+    row = store.recent_signals()[0]
+    assert row["efficacy_label"] == 1
+    assert row["efficacy_move_bps"] == 37.5
+    assert store.efficacy_label_counts() == (1, 0)
+    training = store.efficacy_training_rows()
+    assert training == [({"vol_prev": 3.0}, 1, True)]
     assert store.label_counts() == (1, 0)
     store.close()
 
@@ -76,4 +84,6 @@ def test_meta_and_daily_metrics(tmp_path: Path) -> None:
     assert store.get_meta("missing") is None
     store.record_daily_metrics("2026-08-28", "_ALL", {"alerts": 5})
     store.record_daily_metrics("2026-08-28", "_ALL", {"alerts": 6})  # upsert
+    assert store.get_daily_metrics("2026-08-28") == {"alerts": 6}
+    assert store.get_daily_metrics("2026-08-29") is None
     store.close()

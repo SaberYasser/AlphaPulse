@@ -13,14 +13,13 @@ DEFAULT_SYMBOLS = [
     "TSLA",
     "NVDA",
     "AAPL",
+    "QQQ",
+    "SPY",
     "PLTR",
     "AMD",
     "AMZN",
-    "META",
-    "MSFT",
     "GOOGL",
     "INTC",
-    "MU",
     "AVGO",
     "MSTR",
     "HOOD",
@@ -39,8 +38,8 @@ class DataCfg:
     gap_reconnect_s: float = 5.0
     recovery_min_gap_s: float = 2.0
     stream_restart_max: int = 3
-    # Regime context tape: [market proxy, volatility proxy]. Streamed and
-    # aggregated but never scanned for signals; feeds Snapshot features.
+    # Regime context tape: [market proxy, volatility proxy]. A proxy may also
+    # be in the scan universe; its filtered trade stream is shared once.
     context_symbols: tuple[str, ...] = ("SPY", "VXX")
     max_feed_latency_s: float = 3.0
     queue_trades: int = 20000
@@ -52,17 +51,15 @@ class SessionCfg:
     start_lead_min: int = 8
     after_close: str = "exit"
     # Delivery policy (owner directives 2026-08-31): no NEW alerts in the last
-    # hour (no fresh positions there); one recap message before the close.
-    # Both derive from the session close, so early-close days behave.
+    # hour (no fresh positions there). Efficacy is finalized at session close.
     quiet_last_min: int = 60
-    recap_min_before_close: int = 30
     opening_range_min: int = 5
 
 
 @dataclass(frozen=True)
 class EngineCfg:
     ring_seconds: int = 600
-    minutes_kept: int = 120
+    minutes_kept: int = 420  # full session retained for confirmation-to-close efficacy
     ready_bps: float = 8.0
     break_min_bps: float = 3.0
     break_max_bps: float = 25.0
@@ -76,6 +73,9 @@ class EngineCfg:
     vol_base_min: float = 1.5
     baseline_skip_open_min: int = 2  # minute-of-day baseline is meaningless this early
     imb_min: float = 0.22
+    # A genuine micro-break must retain some aligned participation over 15s,
+    # not merely print a one-window 5s burst. Kept separate from trend onset.
+    imb15_min: float = 0.10
     persist_min_trades: int = 4
     persist_window_s: float = 2.5
     persist_min_span_s: float = 0.6
@@ -134,6 +134,11 @@ class MlCfg:
     # market context informs the model, but exceptional price+volume evidence
     # (e.g. a counter-market opening mover) must always reach the user.
     prob_bypass_score: float = 0.80
+    # Separate learner for the user's north-star target: among delivered,
+    # CONFIRMED alerts, P(direction persists from confirmation to close).
+    # It remains observation-only until this many exact-target labels exist.
+    efficacy_min_labels: int = 40
+    efficacy_prob_gate_min: float = 0.60
     outcome_window_s: int = 300
     pos_multiple: float = 1.5
     min_remaining_frac: float = 0.50
@@ -253,7 +258,7 @@ def load_config(config_path: Path | str, root: Path | None = None) -> Config:
     return cfg
 
 
-def validate(cfg: Config) -> None:
+def _validate_data(cfg: Config) -> None:
     d = cfg.data
     if d.feed not in ("sip", "iex"):
         raise ValueError(f"data.feed must be 'sip' or 'iex', got {d.feed!r}")
@@ -265,22 +270,37 @@ def validate(cfg: Config) -> None:
             "consolidated volume. Set data.demo_mode=true to acknowledge and "
             "run anyway, or use feed=sip."
         )
-    if cfg.session.after_close not in ("exit", "pause"):
-        raise ValueError("session.after_close must be 'exit' or 'pause'")
-    if cfg.ml.engine not in ("auto", "river", "builtin"):
-        raise ValueError("ml.engine must be auto|river|builtin")
     ctx = list(d.context_symbols)
     if any(s != str(s).upper() for s in ctx):
         raise ValueError("data.context_symbols must be uppercase tickers")
-    overlap = set(ctx) & set(cfg.symbols)
-    if overlap:
-        raise ValueError(f"data.context_symbols overlap scan symbols: {sorted(overlap)}")
+    if len(ctx) != len(set(ctx)):
+        raise ValueError("data.context_symbols must not contain duplicates")
+
+
+def _validate_learning(cfg: Config) -> None:
+    if cfg.ml.engine not in ("auto", "river", "builtin"):
+        raise ValueError("ml.engine must be auto|river|builtin")
     if not 60 <= cfg.ml.outcome_window_s <= 300:
         raise ValueError("ml.outcome_window_s must be within 60..300 (1-5 minutes)")
     if cfg.engine.ring_seconds < cfg.ml.outcome_window_s + 60:
         raise ValueError("engine.ring_seconds must exceed ml.outcome_window_s by >= 60")
     if not 0 < cfg.ml.bound_low <= 1.0 <= cfg.ml.bound_high:
         raise ValueError("ml bounds must satisfy 0 < bound_low <= 1 <= bound_high")
+    if cfg.ml.min_labels < 1 or cfg.ml.efficacy_min_labels < 1:
+        raise ValueError("ML minimum label counts must be positive")
+    if not 0.0 <= cfg.ml.prob_gate_min <= 1.0:
+        raise ValueError("ml.prob_gate_min must be within 0..1")
+    if not 0.0 <= cfg.ml.efficacy_prob_gate_min <= 1.0:
+        raise ValueError("ml.efficacy_prob_gate_min must be within 0..1")
+
+
+def validate(cfg: Config) -> None:
+    _validate_data(cfg)
+    if cfg.session.after_close not in ("exit", "pause"):
+        raise ValueError("session.after_close must be 'exit' or 'pause'")
+    if not 0.0 <= cfg.engine.imb15_min <= 1.0:
+        raise ValueError("engine.imb15_min must be within 0..1")
+    _validate_learning(cfg)
 
 
 def load_secrets() -> Secrets:

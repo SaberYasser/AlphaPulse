@@ -36,18 +36,23 @@ CREATE TABLE IF NOT EXISTS signals (
     score          REAL,
     prob           REAL,
     model_version  TEXT,
+    efficacy_prob  REAL,
+    efficacy_model_version TEXT,
     gate_version   INTEGER,
     suppressed     INTEGER DEFAULT 0,
     features       TEXT,
     resolution     TEXT,
     resolution_ts  REAL,
+    resolution_price REAL,
     resolution_reason TEXT,
     label          INTEGER,
     label_reason   TEXT,
     mfe            REAL,
     mae            REAL,
     lead_time_s    REAL,
-    remaining_frac REAL
+    remaining_frac REAL,
+    efficacy_label INTEGER,
+    efficacy_move_bps REAL
 );
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
 CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(date_et);
@@ -77,8 +82,25 @@ class SignalStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_signal_columns()
         self._conn.commit()
         self._enforce_retention()
+
+    def _migrate_signal_columns(self) -> None:
+        """Add nullable learning fields without replacing the user's database."""
+        existing = {
+            str(row[1]) for row in self._conn.execute("PRAGMA table_info(signals)").fetchall()
+        }
+        additions = {
+            "efficacy_prob": "REAL",
+            "efficacy_model_version": "TEXT",
+            "resolution_price": "REAL",
+            "efficacy_label": "INTEGER",
+            "efficacy_move_bps": "REAL",
+        }
+        for name, sql_type in additions.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE signals ADD COLUMN {name} {sql_type}")
 
     def close(self) -> None:
         with self._lock:
@@ -109,8 +131,9 @@ class SignalStore:
             """INSERT OR REPLACE INTO signals
                (signal_id, ts, date_et, symbol, direction, trigger_verb, level_kind,
                 trigger_price, alert_price, invalidation, vol_ratio, score, prob,
-                model_version, gate_version, suppressed, features)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                model_version, efficacy_prob, efficacy_model_version, gate_version,
+                suppressed, features)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 sig.signal_id,
                 sig.alert_ts,
@@ -126,6 +149,8 @@ class SignalStore:
                 sig.score,
                 sig.prob,
                 sig.model_version,
+                sig.efficacy_prob,
+                sig.efficacy_model_version,
                 gate_version,
                 int(sig.suppressed),
                 json.dumps(sig.features),
@@ -134,9 +159,16 @@ class SignalStore:
 
     def record_resolution(self, sig: Signal) -> None:
         self._write(
-            """UPDATE signals SET resolution=?, resolution_ts=?, resolution_reason=?
+            """UPDATE signals SET resolution=?, resolution_ts=?, resolution_price=?,
+               resolution_reason=?
                WHERE signal_id=?""",
-            (sig.resolution, sig.resolution_ts, sig.resolution_reason, sig.signal_id),
+            (
+                sig.resolution,
+                sig.resolution_ts,
+                sig.resolution_price,
+                sig.resolution_reason,
+                sig.signal_id,
+            ),
         )
 
     def record_label(self, r: LabelResult) -> None:
@@ -160,14 +192,91 @@ class SignalStore:
             (date_et, symbol, json.dumps(payload)),
         )
 
-    def confirmed_before(self, date_et: str, cutoff_ts: float) -> list[tuple]:
-        """Delivered CONFIRMED signals alerted before the quiet cutoff (recap)."""
+    def get_daily_metrics(self, date_et: str, symbol: str = "_ALL") -> dict[str, Any] | None:
         with self._lock:
-            return self._conn.execute(
-                "SELECT symbol, direction, ts, alert_price, resolution_ts FROM signals "
-                "WHERE date_et=? AND suppressed=0 AND resolution='CONFIRMED' AND ts < ?",
-                (date_et, cutoff_ts),
+            row = self._conn.execute(
+                "SELECT payload FROM daily_metrics WHERE date_et=? AND symbol=?",
+                (date_et, symbol),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            payload = json.loads(row[0])
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def record_efficacy(
+        self,
+        signal_id: str,
+        label: bool,
+        move_bps: float,
+        resolution_price: float | None = None,
+    ) -> None:
+        self._write(
+            """UPDATE signals SET efficacy_label=?, efficacy_move_bps=?,
+               resolution_price=COALESCE(NULLIF(resolution_price, 0), ?)
+               WHERE signal_id=?""",
+            (int(label), move_bps, resolution_price, signal_id),
+        )
+
+    def confirmed_for_efficacy(self, date_et: str, alert_cutoff_ts: float) -> list[dict[str, Any]]:
+        """Delivered confirmations eligible for the confirmation-to-close metric."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT signal_id, symbol, direction, ts, alert_price, resolution_ts,
+                          resolution_price, features, efficacy_label
+                   FROM signals
+                   WHERE date_et=? AND suppressed=0 AND resolution='CONFIRMED' AND ts < ?
+                   ORDER BY ts""",
+                (date_et, alert_cutoff_ts),
             ).fetchall()
+        cols = (
+            "signal_id",
+            "symbol",
+            "direction",
+            "ts",
+            "alert_price",
+            "resolution_ts",
+            "resolution_price",
+            "features",
+            "efficacy_label",
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(zip(cols, row, strict=True))
+            try:
+                item["features"] = json.loads(item["features"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                item["features"] = {}
+            out.append(item)
+        return out
+
+    def efficacy_training_rows(self) -> list[tuple[dict[str, float], int, bool]]:
+        """Exact-target labels used to reconstruct the session efficacy model."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT features, direction, efficacy_label FROM signals "
+                "WHERE efficacy_label IS NOT NULL ORDER BY ts"
+            ).fetchall()
+        out: list[tuple[dict[str, float], int, bool]] = []
+        for raw_features, direction, label in rows:
+            try:
+                features = json.loads(raw_features or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(features, dict):
+                out.append((features, int(direction), bool(label)))
+        return out
+
+    def efficacy_label_counts(self) -> tuple[int, int]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(efficacy_label=1),0), "
+                "COALESCE(SUM(efficacy_label=0),0) FROM signals "
+                "WHERE efficacy_label IS NOT NULL"
+            ).fetchone()
+        return int(row[0]), int(row[1])
 
     def set_meta(self, key: str, value: str) -> None:
         self._write("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (key, value))
@@ -183,7 +292,8 @@ class SignalStore:
         with self._lock:
             rows = self._conn.execute(
                 """SELECT signal_id, ts, symbol, direction, trigger_price, resolution,
-                          label, lead_time_s, remaining_frac, prob, suppressed
+                          label, lead_time_s, remaining_frac, prob, efficacy_prob,
+                          efficacy_label, efficacy_move_bps, suppressed
                    FROM signals ORDER BY ts DESC LIMIT ?""",
                 (limit,),
             ).fetchall()
@@ -198,6 +308,9 @@ class SignalStore:
             "lead_time_s",
             "remaining_frac",
             "prob",
+            "efficacy_prob",
+            "efficacy_label",
+            "efficacy_move_bps",
             "suppressed",
         ]
         return [dict(zip(cols, r, strict=True)) for r in rows]
